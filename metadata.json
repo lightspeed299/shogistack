@@ -1,0 +1,4 @@
+{
+  "name": "ShogiBoard-Base",
+  "description": "A standalone, interactive Shogi board component with state management. Ready for custom feature integration."
+}
