@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
 import ShogiBoard from './components/ShogiBoard';
 import Komadai from './components/Komadai';
+import Chat from './components/Chat'; // ★Chatをインポート
 import { BoardState, Coordinates, Hand, Move, PieceType, Player } from './types';
 import { createInitialBoard, isValidMove, promotePiece, applyMove, exportKIF } from './utils/shogiUtils';
 import { SENTE_PROMOTION_ZONE, GOTE_PROMOTION_ZONE, PIECE_KANJI } from './constants';
@@ -54,6 +55,9 @@ const App: React.FC = () => {
   const [settings, setSettings] = useState<TimeSettings>({ initial: 600, byoyomi: 30 });
   const [times, setTimes] = useState<{sente: number, gote: number}>({sente: 600, gote: 600});
   const [byoyomi, setByoyomi] = useState<{sente: number, gote: number}>({sente: 30, gote: 30});
+
+  // --- Chat Data ---
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
 
   // Display Data
   const [displayBoard, setDisplayBoard] = useState<BoardState>(createInitialBoard());
@@ -156,6 +160,11 @@ const App: React.FC = () => {
       });
     });
 
+    // ★追加: チャット受信
+    socket.on("receive_message", (msg: any) => {
+      setChatMessages(prev => [...prev, msg]);
+    });
+
     return () => {
       socket.off("sync");
       socket.off("settings_updated");
@@ -165,6 +174,7 @@ const App: React.FC = () => {
       socket.off("game_started");
       socket.off("game_finished");
       socket.off("move");
+      socket.off("receive_message");
       socket.disconnect();
     };
   }, [joined, roomId]);
@@ -196,9 +206,10 @@ const App: React.FC = () => {
       return;
     }
     socket.emit("move", { roomId, move });
-    const newHistory = [...history, move];
-    setHistory(newHistory);
-    setViewIndex(newHistory.length);
+    // Optimistic update
+    // const newHistory = [...history, move];
+    // setHistory(newHistory);
+    // setViewIndex(newHistory.length);
   };
   const requestUndo = () => {
     if (gameStatus === 'playing') return;
@@ -215,6 +226,11 @@ const App: React.FC = () => {
   const copyKIF = () => {
     const kif = exportKIF(history, initialBoard);
     navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
+  };
+
+  // ★追加: チャット送信
+  const handleSendMessage = (text: string) => {
+    socket.emit("send_message", { roomId, message: text, role: myRole });
   };
 
   // --- Click Handlers ---
@@ -343,7 +359,8 @@ const App: React.FC = () => {
   const getRoleName = (r: Role) => r === 'sente' ? '先手' : r === 'gote' ? '後手' : '観戦';
 
   return (
-    <div className="min-h-screen bg-stone-950 flex flex-col items-center justify-center p-2 gap-2 touch-none relative">
+    // ★レイアウト変更: lg:flex-row でPC時は横並び
+    <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-start lg:items-center justify-center p-2 gap-4 touch-none relative overflow-x-hidden">
       {promotionCandidate && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-stone-800 p-6 rounded-xl border border-amber-600 shadow-2xl flex flex-col gap-4 items-center">
@@ -356,188 +373,202 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Header Info */}
-      <div className="w-full max-w-lg flex justify-between items-start text-stone-400 text-sm px-1">
-        <div className="flex flex-col gap-1">
-          <div>Room: <span className="text-amber-200 font-mono">{roomId}</span></div>
-          <div className="text-xs text-stone-500">
-             あなた: <span className="font-bold text-stone-300 text-base">{getRoleName(myRole)}</span>
+      {/* --- 左側 (メインゲームエリア) --- */}
+      <div className="flex flex-col items-center w-full max-w-lg shrink-0">
+
+        {/* Header Info */}
+        <div className="w-full max-w-lg flex justify-between items-start text-stone-400 text-sm px-1 mb-1">
+          <div className="flex flex-col gap-1">
+            <div>Room: <span className="text-amber-200 font-mono">{roomId}</span></div>
+            <div className="text-xs text-stone-500">
+               あなた: <span className="font-bold text-stone-300 text-base">{getRoleName(myRole)}</span>
+            </div>
+          </div>
+          
+          <div className={`px-3 py-1 rounded text-xs font-bold border
+              ${gameStatus === 'playing' ? 'bg-green-900 text-green-100 border-green-700' : 
+                gameStatus === 'waiting' ? 'bg-blue-900 text-blue-100 border-blue-700' :
+                'bg-stone-700 text-stone-300 border-stone-600'}
+          `}>
+            {gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}
           </div>
         </div>
-        
-        <div className={`px-3 py-1 rounded text-xs font-bold border
-            ${gameStatus === 'playing' ? 'bg-green-900 text-green-100 border-green-700' : 
-              gameStatus === 'waiting' ? 'bg-blue-900 text-blue-100 border-blue-700' :
-              'bg-stone-700 text-stone-300 border-stone-600'}
-        `}>
-          {gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}
-        </div>
-      </div>
 
-      {/* --- Top Area (Opponent) --- */}
-      <div className="w-full max-w-lg flex items-end justify-between mb-1 gap-2">
-        <div className="flex-1 min-w-0">
-           {/* ラベル削除 (Komadai内にないので、ここで管理していたラベルもrenderTimerに統合したため不要) */}
-           <Komadai 
-             hand={TopHand} owner={TopOwner} 
-             isCurrentTurn={displayTurn === TopOwner} 
-             onSelectPiece={(p) => handleHandPieceClick(p, TopOwner)} 
-             selectedPiece={displayTurn === TopOwner ? selectedHandPiece : null}
-           />
+        {/* --- Top Area (Opponent) --- */}
+        <div className="w-full max-w-lg flex items-end justify-between mb-1 gap-2">
+          <div className="flex-1 min-w-0">
+             <Komadai 
+               hand={TopHand} owner={TopOwner} 
+               isCurrentTurn={displayTurn === TopOwner} 
+               onSelectPiece={(p) => handleHandPieceClick(p, TopOwner)} 
+               selectedPiece={displayTurn === TopOwner ? selectedHandPiece : null}
+             />
+          </div>
+          <div>
+             {renderTimer(TopOwner)}
+          </div>
         </div>
-        <div>
-           {renderTimer(TopOwner)}
-        </div>
-      </div>
 
-      {/* --- Board --- */}
-      <div className="w-full max-w-lg relative" style={{ transition: 'transform 0.5s', transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
-        <ShogiBoard 
-          board={displayBoard} 
-          onSquareClick={handleSquareClick}
-          selectedSquare={selectedSquare}
-          validMoves={[]} 
-          lastMove={displayLastMove}
-          turn={displayTurn}
-        />
-        
-        {/* 対局待ちオーバーレイ */}
-        {gameStatus === 'waiting' && (
-           <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 backdrop-blur-[2px]" 
-                style={{ transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
-             <div className="bg-stone-900/95 p-6 rounded-xl border border-amber-600 shadow-2xl text-center w-72">
-               <h2 className="text-amber-100 font-bold text-xl mb-4">対局設定</h2>
-               
-               <div className="mb-6 space-y-4 text-left">
-                  <div>
-                    <label className="text-xs text-stone-400 flex justify-between">
-                      <span>持ち時間</span>
-                      <span className="text-amber-400 font-mono">{Math.floor(settings.initial/60)}分</span>
-                    </label>
-                    <input 
-                      type="range" min="0" max="3600" step="60"
-                      value={settings.initial} 
-                      onChange={(e) => updateSettings('initial', Number(e.target.value))}
-                      className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-stone-400 flex justify-between">
-                      <span>秒読み</span>
-                      <span className="text-amber-400 font-mono">{settings.byoyomi}秒</span>
-                    </label>
-                    <input 
-                      type="range" min="0" max="60" step="10"
-                      value={settings.byoyomi} 
-                      onChange={(e) => updateSettings('byoyomi', Number(e.target.value))}
-                      className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"
-                    />
-                  </div>
-               </div>
-
-               {(myRole === 'sente' || myRole === 'gote') ? (
-                 <div className="flex flex-col gap-3">
-                   <button 
-                     onClick={toggleReady} 
-                     className={`font-bold py-3 px-6 rounded-full shadow-lg transition-all active:scale-95
-                       ${readyStatus[myRole] 
-                         ? 'bg-green-600 text-white hover:bg-green-500 ring-2 ring-green-400' 
-                         : 'bg-stone-700 text-stone-300 hover:bg-stone-600'
-                       }`}
-                   >
-                     {readyStatus[myRole] ? "準備完了！" : "準備完了"}
-                   </button>
-                   
-                   <div className="text-xs text-stone-400 mt-2">
-                     <div>相手: <span className={readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? 'text-green-400 font-bold' : 'text-stone-500'}>
-                       {readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? "OK" : "..."}
-                     </span></div>
-                   </div>
+        {/* --- Board --- */}
+        <div className="w-full max-w-lg relative" style={{ transition: 'transform 0.5s', transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
+          <ShogiBoard 
+            board={displayBoard} 
+            onSquareClick={handleSquareClick}
+            selectedSquare={selectedSquare}
+            validMoves={[]} 
+            lastMove={displayLastMove}
+            turn={displayTurn}
+          />
+          
+          {/* 対局待ちオーバーレイ */}
+          {gameStatus === 'waiting' && (
+             <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 backdrop-blur-[2px]" 
+                  style={{ transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
+               <div className="bg-stone-900/95 p-6 rounded-xl border border-amber-600 shadow-2xl text-center w-72">
+                 <h2 className="text-amber-100 font-bold text-xl mb-4">対局設定</h2>
+                 
+                 <div className="mb-6 space-y-4 text-left">
+                    <div>
+                      <label className="text-xs text-stone-400 flex justify-between">
+                        <span>持ち時間</span>
+                        <span className="text-amber-400 font-mono">{Math.floor(settings.initial/60)}分</span>
+                      </label>
+                      <input 
+                        type="range" min="0" max="3600" step="60"
+                        value={settings.initial} 
+                        onChange={(e) => updateSettings('initial', Number(e.target.value))}
+                        className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-stone-400 flex justify-between">
+                        <span>秒読み</span>
+                        <span className="text-amber-400 font-mono">{settings.byoyomi}秒</span>
+                      </label>
+                      <input 
+                        type="range" min="0" max="60" step="10"
+                        value={settings.byoyomi} 
+                        onChange={(e) => updateSettings('byoyomi', Number(e.target.value))}
+                        className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
                  </div>
-               ) : (
-                 <div className="text-stone-400 text-sm">設定中...</div>
+
+                 {(myRole === 'sente' || myRole === 'gote') ? (
+                   <div className="flex flex-col gap-3">
+                     <button 
+                       onClick={toggleReady} 
+                       className={`font-bold py-3 px-6 rounded-full shadow-lg transition-all active:scale-95
+                         ${readyStatus[myRole] 
+                           ? 'bg-green-600 text-white hover:bg-green-500 ring-2 ring-green-400' 
+                           : 'bg-stone-700 text-stone-300 hover:bg-stone-600'
+                         }`}
+                     >
+                       {readyStatus[myRole] ? "準備完了！" : "準備完了"}
+                     </button>
+                     
+                     <div className="text-xs text-stone-400 mt-2">
+                       <div>相手: <span className={readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? 'text-green-400 font-bold' : 'text-stone-500'}>
+                         {readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? "OK" : "..."}
+                       </span></div>
+                     </div>
+                   </div>
+                 ) : (
+                   <div className="text-stone-400 text-sm">設定中...</div>
+                 )}
+               </div>
+             </div>
+          )}
+        </div>
+
+        {/* --- Bottom Area (Self) --- */}
+        <div className="w-full max-w-lg flex items-start justify-between mt-1 gap-2">
+          <div className="flex-1 min-w-0">
+             <Komadai 
+               hand={BottomHand} owner={BottomOwner} 
+               isCurrentTurn={displayTurn === BottomOwner} 
+               onSelectPiece={(p) => handleHandPieceClick(p, BottomOwner)} 
+               selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null}
+             />
+          </div>
+          <div>
+             {renderTimer(BottomOwner)}
+          </div>
+        </div>
+
+        {/* --- Footer Controls --- */}
+        <div className="w-full max-w-lg flex flex-col gap-2 mt-2">
+          {gameStatus !== 'playing' ? (
+            <div className="flex items-center justify-between bg-stone-900/50 p-2 rounded border border-stone-800">
+              <div className="flex gap-2 items-center">
+                <div className="text-stone-400 text-xs font-mono">{viewIndex}手目</div>
+                <button onClick={() => setIsFlipped(!isFlipped)} className="bg-stone-700 text-stone-300 px-2 py-0.5 rounded text-[10px]">反転</button>
+              </div>
+              <div className="flex gap-1">
+                <button onClick={() => setViewIndex(Math.max(0, viewIndex - 1))} className="bg-stone-700 text-stone-200 px-3 py-1 rounded text-xs">◀</button>
+                <button onClick={() => setViewIndex(Math.min(history.length, viewIndex + 1))} className="bg-stone-700 text-stone-200 px-3 py-1 rounded text-xs">▶</button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex justify-center p-1 text-stone-600 text-xs font-mono">
+               {viewIndex}手目
+            </div>
+          )}
+
+          <div className="flex justify-between items-center px-1">
+             <button onClick={copyKIF} className="text-stone-500 hover:text-white text-xs underline">KIFコピー</button>
+
+             <div className="flex gap-2">
+               {gameStatus === 'playing' && (myRole === 'sente' || myRole === 'gote') && (
+                  <button onClick={() => resignGame(myRole)} className="bg-stone-800 text-stone-400 border border-stone-600 px-4 py-2 rounded text-xs hover:bg-stone-700 hover:text-white">
+                    投了する
+                  </button>
+               )}
+
+               {(gameStatus === 'finished' || gameStatus === 'analysis') && (
+                 <>
+                   <button onClick={requestUndo} className="bg-stone-700 text-stone-300 px-3 py-1 rounded text-xs hover:bg-stone-600">1手戻す</button>
+                   
+                   {(myRole === 'sente' || myRole === 'gote') && (
+                     <div className="flex flex-col items-center relative">
+                       <button 
+                         onClick={requestRematch} 
+                         className={`px-3 py-1 rounded text-xs shadow font-bold transition-colors
+                           ${rematchRequests[myRole] ? 'bg-amber-800 text-stone-400' : 'bg-amber-700 text-white hover:bg-amber-600'}
+                         `}
+                         disabled={rematchRequests[myRole]}
+                       >
+                         {rematchRequests[myRole] ? "相手待ち..." : "再対局"}
+                       </button>
+                       {rematchRequests[myRole === 'sente' ? 'gote' : 'sente'] && (
+                          <span className="text-[10px] text-green-400 absolute -top-4 w-full text-center animate-bounce font-bold">
+                             相手OK!
+                          </span>
+                       )}
+                     </div>
+                   )}
+                   {myRole === 'audience' && <div className="text-[10px] text-stone-500">再対局待ち...</div>}
+
+                   <button onClick={requestReset} className="bg-red-900/30 text-red-300 px-3 py-1 rounded text-xs hover:bg-red-900/50">
+                     リセット
+                   </button>
+                 </>
                )}
              </div>
-           </div>
-        )}
-      </div>
-
-      {/* --- Bottom Area (Self) --- */}
-      <div className="w-full max-w-lg flex items-start justify-between mt-1 gap-2">
-        <div className="flex-1 min-w-0">
-           <Komadai 
-             hand={BottomHand} owner={BottomOwner} 
-             isCurrentTurn={displayTurn === BottomOwner} 
-             onSelectPiece={(p) => handleHandPieceClick(p, BottomOwner)} 
-             selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null}
-           />
-        </div>
-        <div>
-           {renderTimer(BottomOwner)}
-        </div>
-      </div>
-
-      {/* --- Footer Controls --- */}
-      <div className="w-full max-w-lg flex flex-col gap-2 mt-2">
-        {gameStatus !== 'playing' ? (
-          <div className="flex items-center justify-between bg-stone-900/50 p-2 rounded border border-stone-800">
-            <div className="flex gap-2 items-center">
-              <div className="text-stone-400 text-xs font-mono">{viewIndex}手目</div>
-              <button onClick={() => setIsFlipped(!isFlipped)} className="bg-stone-700 text-stone-300 px-2 py-0.5 rounded text-[10px]">反転</button>
-            </div>
-            <div className="flex gap-1">
-              <button onClick={() => setViewIndex(Math.max(0, viewIndex - 1))} className="bg-stone-700 text-stone-200 px-3 py-1 rounded text-xs">◀</button>
-              <button onClick={() => setViewIndex(Math.min(history.length, viewIndex + 1))} className="bg-stone-700 text-stone-200 px-3 py-1 rounded text-xs">▶</button>
-            </div>
           </div>
-        ) : (
-          <div className="flex justify-center p-1 text-stone-600 text-xs font-mono">
-             {viewIndex}手目
-          </div>
-        )}
-
-        <div className="flex justify-between items-center px-1">
-           <button onClick={copyKIF} className="text-stone-500 hover:text-white text-xs underline">KIFコピー</button>
-
-           <div className="flex gap-2">
-             {gameStatus === 'playing' && (myRole === 'sente' || myRole === 'gote') && (
-                <button onClick={() => resignGame(myRole)} className="bg-stone-800 text-stone-400 border border-stone-600 px-4 py-2 rounded text-xs hover:bg-stone-700 hover:text-white">
-                  投了する
-                </button>
-             )}
-
-             {(gameStatus === 'finished' || gameStatus === 'analysis') && (
-               <>
-                 <button onClick={requestUndo} className="bg-stone-700 text-stone-300 px-3 py-1 rounded text-xs hover:bg-stone-600">1手戻す</button>
-                 
-                 {(myRole === 'sente' || myRole === 'gote') && (
-                   <div className="flex flex-col items-center relative">
-                     <button 
-                       onClick={requestRematch} 
-                       className={`px-3 py-1 rounded text-xs shadow font-bold transition-colors
-                         ${rematchRequests[myRole] ? 'bg-amber-800 text-stone-400' : 'bg-amber-700 text-white hover:bg-amber-600'}
-                       `}
-                       disabled={rematchRequests[myRole]}
-                     >
-                       {rematchRequests[myRole] ? "相手待ち..." : "再対局"}
-                     </button>
-                     {rematchRequests[myRole === 'sente' ? 'gote' : 'sente'] && (
-                        <span className="text-[10px] text-green-400 absolute -top-4 w-full text-center animate-bounce font-bold">
-                           相手OK!
-                        </span>
-                     )}
-                   </div>
-                 )}
-                 {myRole === 'audience' && <div className="text-[10px] text-stone-500">再対局待ち...</div>}
-
-                 <button onClick={requestReset} className="bg-red-900/30 text-red-300 px-3 py-1 rounded text-xs hover:bg-red-900/50">
-                   リセット
-                 </button>
-               </>
-             )}
-           </div>
         </div>
       </div>
+
+      {/* --- 右側 (チャットエリア) --- */}
+      {/* PCでは高さ固定、スマホでは下に配置 */}
+      <div className="w-full max-w-lg lg:max-w-xs h-[400px] lg:h-[600px] shrink-0">
+        <Chat 
+          messages={chatMessages} 
+          onSendMessage={handleSendMessage} 
+          myRole={myRole} 
+        />
+      </div>
+
     </div>
   );
 };

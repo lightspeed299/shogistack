@@ -18,10 +18,7 @@ const ShogiBoard: React.FC<ShogiBoardProps> = ({
   lastMove,
   turn
 }) => {
-  // Hoshi (Star points) coordinates
-  const isHoshi = (x: number, y: number) => {
-    return (x === 2 || x === 5) && (y === 2 || y === 5);
-  };
+  // 星（点）の判定ロジックを削除しました
 
   return (
     <div className="relative select-none touch-manipulation shadow-2xl rounded-sm overflow-hidden ring-1 ring-[#5c3a1e]">
@@ -50,10 +47,7 @@ const ShogiBoard: React.FC<ShogiBoardProps> = ({
                     ${isSelected ? 'bg-[#f5e6cd]' : isLastMoveDst ? 'bg-[#d8b068]' : isLastMoveSrc ? 'bg-[#dcc08e]' : 'bg-[#e0c38c]'}
                   `}
                 >
-                  {/* Hoshi (Star Points) */}
-                  {isHoshi(x, y) && !piece && (
-                    <div className="absolute w-1.5 h-1.5 bg-stone-800/80 rounded-full pointer-events-none" />
-                  )}
+                  {/* 星（点）の描画処理を削除しました */}
 
                   {/* Piece Rendering */}
                   {piece && (
