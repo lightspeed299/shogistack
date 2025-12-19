@@ -14,20 +14,13 @@ const EMPTY_HAND = {
   [PieceType.PromotedSilver]: 0, [PieceType.Horse]: 0, [PieceType.Dragon]: 0,
 };
 
-// src/App.tsx
-
-// ... (省略)
-
-// 変更前: const socket: Socket = io("http://localhost:3001", ...
-// 変更後:
+// 環境変数からバックエンドのURLを取得（なければローカル）
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 
 const socket: Socket = io(BACKEND_URL, {
   transports: ['websocket', 'polling'],
   autoConnect: false,
 });
-
-// ... (以下省略)
 
 const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
 const bufferSize = audioCtx.sampleRate * 2.0;
@@ -147,9 +140,7 @@ const App: React.FC = () => {
   const [selectedHandPiece, setSelectedHandPiece] = useState<PieceType | null>(null);
   const [promotionCandidate, setPromotionCandidate] = useState<{ move: Move } | null>(null);
 
-  // ★追加: ローカル検討モードの管理
   const [isLocalMode, setIsLocalMode] = useState(false);
-  // Socketイベント内でstateを参照するためのRef
   const isLocalModeRef = useRef(false);
 
   const isProcessingMove = useRef(false);
@@ -209,18 +200,14 @@ const App: React.FC = () => {
     }
   }, [times, byoyomi, gameStatus, displayTurn]);
 
-  // ★追加: ローカルモード切替処理
   const toggleLocalMode = () => {
     if (isLocalMode) {
-      // ローカルモード終了（同期に戻る）
       if (window.confirm("ローカル検討を終了し、最新の同期局面に戻りますか？")) {
         setIsLocalMode(false);
         isLocalModeRef.current = false;
-        // サーバーに最新状態を要求 (join_roomでsyncが返ってくる仕組みを利用)
         socket.emit("join_room", { roomId, mode: isAnalysisRoom ? 'analysis' : 'normal', userId });
       }
     } else {
-      // ローカルモード開始
       setIsLocalMode(true);
       isLocalModeRef.current = true;
     }
@@ -255,7 +242,6 @@ const App: React.FC = () => {
 
     socket.on("game_started", () => {
       isProcessingMove.current = false;
-      // 対局開始時は強制的にローカルモード解除
       setIsLocalMode(false);
       isLocalModeRef.current = false;
       
@@ -288,7 +274,6 @@ const App: React.FC = () => {
     });
 
     socket.on("move", (move: Move) => {
-      // ★修正: ローカルモード中は、サーバーからの指し手を受信しても無視する（画面を動かさない）
       if (isLocalModeRef.current) return;
 
       isProcessingMove.current = false;
@@ -353,11 +338,8 @@ const App: React.FC = () => {
 
     if (isProcessingMove.current) return;
     
-    // ★修正: ローカルモードならサーバー送信をスキップ
     if (isLocalMode) {
-       // サーバーには送らないが、ローカルの履歴は更新する
        setHistory(prev => {
-          // もし過去の局面から指したなら、そこから分岐（以降を削除して追加）
           const truncated = prev.slice(0, viewIndex);
           return [...truncated, move];
        });
@@ -366,18 +348,14 @@ const App: React.FC = () => {
        return;
     }
 
-    // 通常モード（同期）
     isProcessingMove.current = true;
 
-    // 検討モードなら分岐同期（branchIndex送信）
     if (gameStatus === 'finished' || gameStatus === 'analysis') {
        socket.emit("move", { roomId, move, branchIndex: viewIndex });
     } else {
-       // 対局中
        socket.emit("move", { roomId, move });
     }
     
-    // クライアント側先行更新
     if ((gameStatus === 'finished' || gameStatus === 'analysis') && viewIndex < history.length) {
        setHistory(prev => {
           const truncated = prev.slice(0, viewIndex);
@@ -391,7 +369,6 @@ const App: React.FC = () => {
   };
 
   const requestUndo = () => {
-    // ★修正: ローカルモードならサーバーに送らず、自分の画面だけ戻す
     if (isLocalMode) {
        if (viewIndex > 0) {
           setViewIndex(viewIndex - 1);
@@ -426,8 +403,6 @@ const App: React.FC = () => {
   };
 
   const handleSquareClick = (coords: Coordinates) => {
-    // ローカルモード中はWaitingでも操作可能にする場合はここを調整
-    // 基本はWaiting中は操作不可でOK
     if (gameStatus === 'waiting') return;
     
     const clickedPiece = displayBoard[coords.y][coords.x];
@@ -538,7 +513,7 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
         <form onSubmit={handleJoin} className="bg-stone-800 p-8 rounded-lg shadow-xl border border-amber-700/30 max-w-sm w-full space-y-4">
-          <h1 className="text-2xl font-bold text-amber-100 text-center font-serif">Shogistack</h1>
+          <h1 className="text-2xl font-bold text-amber-100 text-center font-serif">将棋コネクト</h1>
           <div>
             <label className="block text-stone-400 text-sm mb-2">ルーム名</label>
             <input 
@@ -564,7 +539,8 @@ const App: React.FC = () => {
   const getRoleName = (r: Role) => r === 'sente' ? '先手' : r === 'gote' ? '後手' : '観戦';
 
   return (
-    <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-start lg:items-center justify-center p-2 gap-4 touch-none relative overflow-x-hidden">
+    // ★修正: touch-noneを削除し、レイアウト調整
+    <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-center justify-start lg:justify-center p-2 gap-4 relative">
       <div className="flex flex-col items-center w-full max-w-lg shrink-0">
         
         {/* Header Info */}
@@ -654,7 +630,6 @@ const App: React.FC = () => {
                 </div>
               </div>
               
-              {/* ★追加: ローカル検討モード切替ボタン */}
               {(gameStatus === 'finished' || gameStatus === 'analysis') && (
                 <button 
                   onClick={toggleLocalMode}
@@ -664,7 +639,7 @@ const App: React.FC = () => {
                       : 'bg-stone-700 text-stone-300 hover:bg-stone-600 border border-stone-600'}
                   `}
                 >
-                  {isLocalMode ? " 同期に戻る " : " ローカル検討 "}
+                  {isLocalMode ? "📡 同期に戻る (最新局面へ)" : "🤫 一人で検討する (同期OFF)"}
                 </button>
               )}
             </div>
