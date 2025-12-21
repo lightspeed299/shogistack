@@ -84,9 +84,12 @@ const playSound = (type: 'move' | 'alert' | 'timeout') => {
 type GameStatus = 'waiting' | 'playing' | 'finished' | 'analysis';
 type Role = 'sente' | 'gote' | 'audience';
 
+// ★修正: 設定項目の型を追加
 interface TimeSettings {
   initial: number;
   byoyomi: number;
+  randomTurn: boolean; // 振り駒(ランダム)
+  fixTurn: boolean;    // 再対局で固定
 }
 
 const formatTime = (seconds: number) => {
@@ -117,7 +120,7 @@ const App: React.FC = () => {
   const [gameStatus, setGameStatus] = useState<GameStatus>('waiting');
   const [winner, setWinner] = useState<Player | null>(null);
   const [initialBoard] = useState<BoardState>(createInitialBoard());
-  const [settings, setSettings] = useState<TimeSettings>({ initial: 600, byoyomi: 30 });
+  const [settings, setSettings] = useState<TimeSettings>({ initial: 600, byoyomi: 30, randomTurn: false, fixTurn: false });
   const [times, setTimes] = useState<{sente: number, gote: number}>({sente: 600, gote: 600});
   const [byoyomi, setByoyomi] = useState<{sente: number, gote: number}>({sente: 30, gote: 30});
   const [chatMessages, setChatMessages] = useState<any[]>([]);
@@ -360,7 +363,8 @@ const App: React.FC = () => {
     e.preventDefault();
     if (roomId.trim()) setJoined(true);
   };
-  const updateSettings = (key: keyof TimeSettings, value: number) => {
+  // ★修正: boolean型の設定値にも対応
+  const updateSettings = (key: keyof TimeSettings, value: number | boolean) => {
     const newSettings = { ...settings, [key]: value };
     socket.emit("update_settings", { roomId, settings: newSettings });
   };
@@ -627,11 +631,19 @@ const App: React.FC = () => {
                       <label className="text-xs text-stone-400 flex justify-between"><span>秒読み</span><span className="text-amber-400 font-mono">{settings.byoyomi}秒</span></label>
                       <input type="range" min="0" max="60" step="10" value={settings.byoyomi} onChange={(e) => updateSettings('byoyomi', Number(e.target.value))} className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"/>
                     </div>
+                    {/* ★追加: 振り駒・手番固定の設定 */}
+                    <div className="flex items-center justify-between">
+                       <label className="text-xs text-stone-400">振り駒 (ランダム)</label>
+                       <input type="checkbox" checked={settings.randomTurn} onChange={(e) => updateSettings('randomTurn', e.target.checked)} className="w-4 h-4 accent-amber-600 cursor-pointer"/>
+                    </div>
+                    <div className={`flex items-center justify-between transition-opacity ${settings.randomTurn ? 'opacity-100' : 'opacity-30 pointer-events-none'}`}>
+                       <label className="text-xs text-stone-400">再対局で固定</label>
+                       <input type="checkbox" checked={settings.fixTurn} onChange={(e) => updateSettings('fixTurn', e.target.checked)} className="w-4 h-4 accent-amber-600 cursor-pointer" disabled={!settings.randomTurn}/>
+                    </div>
                  </div>
                  {(myRole === 'sente' || myRole === 'gote') ? (
                    <div className="flex flex-col gap-3">
                      <button onClick={toggleReady} className={`font-bold py-3 px-6 rounded-full shadow-lg transition-all active:scale-95 ${readyStatus[myRole] ? 'bg-green-600 text-white hover:bg-green-500 ring-2 ring-green-400' : 'bg-stone-700 text-stone-300 hover:bg-stone-600'}`}>{readyStatus[myRole] ? "準備完了！" : "準備完了"}</button>
-                     {/* ★修正: 相手のステータス表示を "..." から "準備中" に変更 */}
                      <div className="text-xs text-stone-400 mt-2"><div>相手: <span className={readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? 'text-green-400 font-bold' : 'text-stone-500'}>{readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? "OK" : "準備中"}</span></div></div>
                    </div>
                  ) : ( <div className="text-stone-400 text-sm">設定中...</div> )}
@@ -688,21 +700,14 @@ const App: React.FC = () => {
                )}
                {(gameStatus === 'finished' || gameStatus === 'analysis') && (
                  <>
-                   {/* 1. 1手削除 */}
                    <button onClick={requestUndo} className="bg-stone-700 text-stone-300 px-3 py-1 rounded text-xs hover:bg-stone-600">1手削除</button>
-                   
-                   {/* 2. 初期局面へ */}
                    <button onClick={requestReset} className="bg-red-900/30 text-red-300 px-3 py-1 rounded text-xs hover:bg-red-900/50">初期局面へ</button>
-
-                   {/* 3. 再対局 (対局者の場合) */}
                    {(myRole === 'sente' || myRole === 'gote') && (
                      <div className="flex flex-col items-center relative">
                        <button onClick={requestRematch} className={`px-3 py-1 rounded text-xs shadow font-bold transition-colors ${rematchRequests[myRole] ? 'bg-amber-800 text-stone-400' : 'bg-amber-700 text-white hover:bg-amber-600'}`} disabled={rematchRequests[myRole]}>{rematchRequests[myRole] ? "相手待ち..." : "再対局"}</button>
                        {rematchRequests[myRole === 'sente' ? 'gote' : 'sente'] && (<span className="text-[10px] text-green-400 absolute -top-4 w-full text-center animate-bounce font-bold">相手OK!</span>)}
                      </div>
                    )}
-                   
-                   {/* 3. 再対局待ち (観戦者の場合) */}
                    {myRole === 'audience' && <div className="text-[10px] text-stone-500">再対局待ち...</div>}
                  </>
                )}
