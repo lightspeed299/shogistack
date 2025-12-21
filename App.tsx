@@ -36,34 +36,27 @@ const playSound = (type: 'move' | 'alert' | 'timeout') => {
   if (type === 'move') {
     const noise = audioCtx.createBufferSource();
     noise.buffer = noiseBuffer;
-    
     const filter = audioCtx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.frequency.setValueAtTime(8000, now); 
-
     const gain = audioCtx.createGain();
     gain.gain.setValueAtTime(1.0, now);
     gain.gain.exponentialRampToValueAtTime(0.01, now + 0.015); 
-
     const osc = audioCtx.createOscillator();
     osc.type = 'triangle';
     osc.frequency.setValueAtTime(600, now); 
     const oscGain = audioCtx.createGain();
     oscGain.gain.setValueAtTime(0.15, now);
     oscGain.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
-
     noise.connect(filter);
     filter.connect(gain);
     gain.connect(audioCtx.destination);
-    
     osc.connect(oscGain);
     oscGain.connect(audioCtx.destination);
-
     noise.start(now);
     noise.stop(now + 0.1);
     osc.start(now);
     osc.stop(now + 0.1);
-
   } else if (type === 'alert') {
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
@@ -74,7 +67,6 @@ const playSound = (type: 'move' | 'alert' | 'timeout') => {
     gain.gain.linearRampToValueAtTime(0.01, now + 0.1);
     osc.start(now);
     osc.stop(now + 0.1);
-
   } else if (type === 'timeout') {
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
@@ -114,9 +106,11 @@ const isSameMove = (a: Move, b: Move) => {
 const App: React.FC = () => {
   const [roomId, setRoomId] = useState<string>("");
   const [userId, setUserId] = useState<string>("");
+  const [userName, setUserName] = useState<string>("");
   const [isAnalysisRoom, setIsAnalysisRoom] = useState(false);
   const [joined, setJoined] = useState(false);
   const [myRole, setMyRole] = useState<Role>('audience');
+  const [playerNames, setPlayerNames] = useState<{sente: string | null, gote: string | null}>({sente: null, gote: null});
   const [readyStatus, setReadyStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
   const [rematchRequests, setRematchRequests] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
   const [isFlipped, setIsFlipped] = useState(false);
@@ -138,15 +132,10 @@ const App: React.FC = () => {
   const [selectedSquare, setSelectedSquare] = useState<Coordinates | null>(null);
   const [selectedHandPiece, setSelectedHandPiece] = useState<PieceType | null>(null);
   const [promotionCandidate, setPromotionCandidate] = useState<{ move: Move } | null>(null);
-
   const [isLocalMode, setIsLocalMode] = useState(false);
   const isLocalModeRef = useRef(false);
-
   const lastServerTimeData = useRef<{ times: {sente: number, gote: number}, byoyomi: {sente: number, gote: number}, receivedAt: number } | null>(null);
-  
-  // ★追加: 音連打防止用のRef
   const lastSoundTime = useRef<number | null>(null);
-
   const isProcessingMove = useRef(false);
 
   useEffect(() => {
@@ -163,7 +152,6 @@ const App: React.FC = () => {
     let currentHands = { sente: { ...EMPTY_HAND }, gote: { ...EMPTY_HAND } };
     let currentTurn: Player = 'sente';
     let lastM = null;
-
     try {
       for (let i = 0; i < index; i++) {
         const m = moves[i];
@@ -177,7 +165,6 @@ const App: React.FC = () => {
     } catch (e) {
       console.error("Error applying move history:", e);
     }
-
     setDisplayBoard(currentBoard);
     setDisplayHands(currentHands);
     setDisplayTurn(currentTurn);
@@ -194,23 +181,17 @@ const App: React.FC = () => {
     }
   }, [gameStatus, myRole]);
 
-  // クライアント側タイマー (0.1秒更新)
   useEffect(() => {
     if (gameStatus !== 'playing') return;
-
     const interval = setInterval(() => {
       if (!lastServerTimeData.current) return;
-
       const now = Date.now();
       const elapsedSec = (now - lastServerTimeData.current.receivedAt) / 1000;
-      
       const serverTimes = lastServerTimeData.current.times;
       const serverByoyomi = lastServerTimeData.current.byoyomi;
-      
       const currentPlayer = displayTurn;
       let newTime = serverTimes[currentPlayer];
       let newByoyomi = serverByoyomi[currentPlayer];
-
       if (newTime > 0) {
         newTime = Math.max(0, Math.ceil(serverTimes[currentPlayer] - elapsedSec));
       } else {
@@ -218,25 +199,20 @@ const App: React.FC = () => {
            newByoyomi = Math.max(0, Math.ceil(serverByoyomi[currentPlayer] - elapsedSec));
         }
       }
-
       setTimes(prev => ({
         ...prev,
         [currentPlayer]: newTime,
         [currentPlayer === 'sente' ? 'gote' : 'sente']: serverTimes[currentPlayer === 'sente' ? 'gote' : 'sente']
       }));
-
       setByoyomi(prev => ({
         ...prev,
         [currentPlayer]: newByoyomi,
         [currentPlayer === 'sente' ? 'gote' : 'sente']: serverByoyomi[currentPlayer === 'sente' ? 'gote' : 'sente']
       }));
-
     }, 100); 
-
     return () => clearInterval(interval);
   }, [gameStatus, displayTurn]);
 
-  // ★修正: アラート音の連打防止
   useEffect(() => {
     if (gameStatus !== 'playing') {
         lastSoundTime.current = null;
@@ -245,15 +221,12 @@ const App: React.FC = () => {
     const currentP = displayTurn; 
     const isByoyomi = times[currentP] === 0;
     const val = isByoyomi ? byoyomi[currentP] : times[currentP];
-
-    // 秒読み中、かつ10秒以下、かつ値が変わったときのみ鳴らす
     if (isByoyomi && val <= 10 && val > 0) {
       if (lastSoundTime.current !== val) {
         playSound('alert');
         lastSoundTime.current = val;
       }
     } else {
-        // 条件から外れたらリセット
         lastSoundTime.current = null;
     }
   }, [times, byoyomi, gameStatus, displayTurn]);
@@ -263,7 +236,7 @@ const App: React.FC = () => {
       if (window.confirm("ローカル検討を終了し、最新の同期局面に戻りますか？")) {
         setIsLocalMode(false);
         isLocalModeRef.current = false;
-        socket.emit("join_room", { roomId, mode: isAnalysisRoom ? 'analysis' : 'normal', userId });
+        socket.emit("join_room", { roomId, mode: isAnalysisRoom ? 'analysis' : 'normal', userId, userName });
       }
     } else {
       setIsLocalMode(true);
@@ -275,7 +248,12 @@ const App: React.FC = () => {
     if (!joined || !userId) return;
 
     socket.connect();
-    socket.emit("join_room", { roomId, mode: isAnalysisRoom ? 'analysis' : 'normal', userId });
+    socket.emit("join_room", { 
+      roomId, 
+      mode: isAnalysisRoom ? 'analysis' : 'normal', 
+      userId, 
+      userName: userName.trim() || "名無し" 
+    });
 
     socket.on("sync", (data: any) => {
       isProcessingMove.current = false;
@@ -291,6 +269,11 @@ const App: React.FC = () => {
          lastServerTimeData.current = { times: data.times, byoyomi: {sente:30, gote:30}, receivedAt: Date.now() };
       }
       if (data.yourRole) setMyRole(data.yourRole as Role);
+      if (data.playerNames) setPlayerNames(data.playerNames);
+    });
+
+    socket.on("player_names_updated", (names: {sente: string | null, gote: string | null}) => {
+        setPlayerNames(names);
     });
 
     socket.on("settings_updated", (newSettings: TimeSettings) => setSettings(newSettings));
@@ -309,7 +292,6 @@ const App: React.FC = () => {
       isProcessingMove.current = false;
       setIsLocalMode(false);
       isLocalModeRef.current = false;
-      
       setHistory([]);
       setGameStatus('playing');
       setWinner(null);
@@ -324,7 +306,6 @@ const App: React.FC = () => {
       setGameStatus('finished');
       setWinner(data.winner);
       playSound('timeout');
-      
       let msg = "終局！";
       if (data.reason === 'illegal_sennichite') {
          msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (連続王手の千日手)`;
@@ -340,11 +321,8 @@ const App: React.FC = () => {
 
     socket.on("move", (move: Move) => {
       if (isLocalModeRef.current) return;
-
       isProcessingMove.current = false;
-      
       lastServerTimeData.current = null; 
-
       setHistory(prev => {
         const last = prev[prev.length - 1];
         if (last && isSameMove(last, move)) {
@@ -352,7 +330,6 @@ const App: React.FC = () => {
           newHistory[newHistory.length - 1] = move;
           return newHistory;
         }
-        
         playSound('move');
         const newHistory = [...prev, move];
         setViewIndex(newHistory.length); 
@@ -366,6 +343,7 @@ const App: React.FC = () => {
 
     return () => {
       socket.off("sync");
+      socket.off("player_names_updated");
       socket.off("settings_updated");
       socket.off("ready_status");
       socket.off("rematch_status");
@@ -376,7 +354,7 @@ const App: React.FC = () => {
       socket.off("receive_message");
       socket.disconnect();
     };
-  }, [joined, roomId, userId]);
+  }, [joined, roomId, userId]); 
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -402,9 +380,7 @@ const App: React.FC = () => {
         return;
       }
     }
-
     if (isProcessingMove.current) return;
-    
     if (isLocalMode) {
        setHistory(prev => {
           const truncated = prev.slice(0, viewIndex);
@@ -414,15 +390,12 @@ const App: React.FC = () => {
        playSound('move');
        return;
     }
-
     isProcessingMove.current = true;
-
     if (gameStatus === 'finished' || gameStatus === 'analysis') {
        socket.emit("move", { roomId, move, branchIndex: viewIndex });
     } else {
        socket.emit("move", { roomId, move });
     }
-    
     if ((gameStatus === 'finished' || gameStatus === 'analysis') && viewIndex < history.length) {
        setHistory(prev => {
           const truncated = prev.slice(0, viewIndex);
@@ -437,25 +410,20 @@ const App: React.FC = () => {
 
   const requestUndo = () => {
     if (isLocalMode) {
-       if (viewIndex > 0) {
-          setViewIndex(viewIndex - 1);
-       }
+       if (viewIndex > 0) setViewIndex(viewIndex - 1);
        return;
     }
-
     if (gameStatus === 'finished' || gameStatus === 'analysis') {
        if (history.length === 0) return;
-       if(window.confirm("局面を1手戻しますか？（全員に反映されます）")) socket.emit("undo", roomId);
+       if(window.confirm("最新の1手を削除しますか？（全員に反映されます）")) socket.emit("undo", roomId);
        return;
     }
-
     if (gameStatus === 'playing') return;
     if (history.length === 0) return;
     if(window.confirm("1手戻しますか？")) socket.emit("undo", roomId);
   };
-
   const requestReset = () => {
-    if(window.confirm("初期化しますか？")) socket.emit("reset", roomId);
+    if(window.confirm("初期局面に戻しますか？（棋譜はすべて消えます）")) socket.emit("reset", roomId);
   };
   const requestRematch = () => {
     if (myRole === 'sente' || myRole === 'gote') socket.emit("rematch", { roomId, role: myRole });
@@ -465,13 +433,13 @@ const App: React.FC = () => {
     const kif = exportKIF(history, initialBoard);
     navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
   };
+  
   const handleSendMessage = (text: string) => {
-    socket.emit("send_message", { roomId, message: text, role: myRole });
+    socket.emit("send_message", { roomId, message: text, role: myRole, userName });
   };
 
   const handleSquareClick = (coords: Coordinates) => {
     if (gameStatus === 'waiting') return;
-    
     const clickedPiece = displayBoard[coords.y][coords.x];
     if (clickedPiece?.owner === displayTurn) {
       setSelectedSquare(coords);
@@ -481,7 +449,6 @@ const App: React.FC = () => {
     if (selectedSquare) {
       const piece = displayBoard[selectedSquare.y][selectedSquare.x];
       if (!piece) return;
-      
       let mustPromote = false;
       if (displayTurn === 'sente') {
         if ((piece.type === PieceType.Pawn || piece.type === PieceType.Lance) && coords.y === 0) mustPromote = true;
@@ -490,22 +457,14 @@ const App: React.FC = () => {
         if ((piece.type === PieceType.Pawn || piece.type === PieceType.Lance) && coords.y === 8) mustPromote = true;
         if (piece.type === PieceType.Knight && coords.y >= 7) mustPromote = true;
       }
-
       const baseMove: Move = { 
-        from: selectedSquare, 
-        to: coords, 
-        piece: piece.type, 
-        drop: false, 
-        isPromoted: mustPromote ? true : false 
+        from: selectedSquare, to: coords, piece: piece.type, drop: false, isPromoted: mustPromote ? true : false 
       };
-      
       if (!isValidMove(displayBoard, displayTurn, baseMove)) return; 
-
       const isEnteringZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(coords.y);
       const isLeavingZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(selectedSquare.y);
       const canPromote = !piece.isPromoted && (isEnteringZone || isLeavingZone) && 
                          piece.type !== PieceType.Gold && piece.type !== PieceType.King;
-
       if (mustPromote) {
         processMove({ ...baseMove, isPromoted: true });
         setSelectedSquare(null);
@@ -516,7 +475,6 @@ const App: React.FC = () => {
         setSelectedSquare(null);
         return;
       }
-      
       processMove(baseMove);
       setSelectedSquare(null);
       return;
@@ -524,11 +482,7 @@ const App: React.FC = () => {
     if (selectedHandPiece) {
       if (clickedPiece === null) {
         const move: Move = { 
-          from: 'hand', 
-          to: coords, 
-          piece: selectedHandPiece, 
-          drop: true,
-          isPromoted: false 
+          from: 'hand', to: coords, piece: selectedHandPiece, drop: true, isPromoted: false 
         };
         if (isValidMove(displayBoard, displayTurn, move)) {
           processMove(move);
@@ -556,14 +510,24 @@ const App: React.FC = () => {
     const time = times[owner];
     const byo = byoyomi[owner];
     const inByoyomi = time === 0;
+    
+    const name = playerNames[owner] || (owner === 'sente' ? "先手" : "後手");
+    const label = owner === 'sente' ? '☗ 先手' : '☖ 後手';
+
     return (
       <div className={`
-        flex flex-col items-end px-3 py-1 rounded border-b-4 transition-colors min-w-[80px]
+        flex flex-col items-end px-3 py-1 rounded border-b-4 transition-colors min-w-[100px]
         ${isTurn ? 'bg-stone-800 border-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-stone-900 border-stone-800 opacity-60'}
       `}>
-        <span className="text-[12px] text-stone-400 font-bold tracking-wider mb-1">
-          {owner === 'sente' ? '☗ 先手' : '☖ 後手'}
-        </span>
+        <div className="flex flex-col items-end mb-1">
+            <span className="text-sm text-stone-200 font-bold truncate max-w-[120px]">
+                {name}
+            </span>
+            <span className="text-[10px] text-stone-500 font-mono">
+                {label}
+            </span>
+        </div>
+        
         <div className="flex items-baseline gap-1">
            <span className={`font-mono text-xl ${inByoyomi ? 'text-red-400' : 'text-stone-200'}`}>
              {formatTime(time)}
@@ -587,6 +551,15 @@ const App: React.FC = () => {
               type="text" value={roomId} onChange={(e) => setRoomId(e.target.value)}
               className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-2 text-white"
               placeholder="room1"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-stone-400 text-sm mb-2">名前（ニックネーム）</label>
+            <input 
+              type="text" value={userName} onChange={(e) => setUserName(e.target.value)}
+              className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-2 text-white"
+              placeholder="名無し"
             />
           </div>
           <div className="flex items-center gap-3 p-3 bg-stone-900/50 rounded border border-stone-700">
@@ -603,20 +576,14 @@ const App: React.FC = () => {
   const BottomOwner = isFlipped ? 'gote' : 'sente';
   const TopHand = isFlipped ? displayHands.sente : displayHands.gote;
   const TopOwner = isFlipped ? 'sente' : 'gote';
-  const getRoleName = (r: Role) => r === 'sente' ? '先手' : r === 'gote' ? '後手' : '観戦';
 
   return (
     <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-center justify-start lg:justify-center p-2 gap-4 relative">
       <div className="flex flex-col items-center w-full max-w-lg shrink-0">
         
         {/* Header Info */}
-        <div className="w-full max-w-lg flex justify-between items-start text-stone-400 text-sm px-1 mb-1">
-          <div className="flex flex-col gap-1">
-            <div>Room: <span className="text-amber-200 font-mono">{roomId}</span></div>
-            <div className="text-xs text-stone-500">
-               あなた: <span className="font-bold text-stone-300 text-base">{getRoleName(myRole)}</span>
-            </div>
-          </div>
+        <div className="w-full max-w-lg flex justify-between items-center text-stone-400 text-sm px-1 mb-1">
+          <div>Room: <span className="text-amber-200 font-mono">{roomId}</span></div>
           <div className={`px-3 py-1 rounded text-xs font-bold border
               ${gameStatus === 'playing' ? 'bg-green-900 text-green-100 border-green-700' : 
                 gameStatus === 'waiting' ? 'bg-blue-900 text-blue-100 border-blue-700' :
@@ -626,7 +593,7 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* --- Top Area --- */}
+        {/* --- Top Area (相手) --- */}
         <div className="w-full max-w-lg flex items-end justify-between mb-1 gap-2">
           <div className="flex-1 min-w-0">
              <Komadai hand={TopHand} owner={TopOwner} isCurrentTurn={displayTurn === TopOwner} onSelectPiece={(p) => handleHandPieceClick(p, TopOwner)} selectedPiece={displayTurn === TopOwner ? selectedHandPiece : null} />
@@ -664,7 +631,8 @@ const App: React.FC = () => {
                  {(myRole === 'sente' || myRole === 'gote') ? (
                    <div className="flex flex-col gap-3">
                      <button onClick={toggleReady} className={`font-bold py-3 px-6 rounded-full shadow-lg transition-all active:scale-95 ${readyStatus[myRole] ? 'bg-green-600 text-white hover:bg-green-500 ring-2 ring-green-400' : 'bg-stone-700 text-stone-300 hover:bg-stone-600'}`}>{readyStatus[myRole] ? "準備完了！" : "準備完了"}</button>
-                     <div className="text-xs text-stone-400 mt-2"><div>相手: <span className={readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? 'text-green-400 font-bold' : 'text-stone-500'}>{readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? "OK" : "..."}</span></div></div>
+                     {/* ★修正: 相手のステータス表示を "..." から "準備中" に変更 */}
+                     <div className="text-xs text-stone-400 mt-2"><div>相手: <span className={readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? 'text-green-400 font-bold' : 'text-stone-500'}>{readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? "OK" : "準備中"}</span></div></div>
                    </div>
                  ) : ( <div className="text-stone-400 text-sm">設定中...</div> )}
                </div>
@@ -672,7 +640,7 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* --- Bottom Area --- */}
+        {/* --- Bottom Area (自分) --- */}
         <div className="w-full max-w-lg flex items-start justify-between mt-1 gap-2">
           <div className="flex-1 min-w-0">
              <Komadai hand={BottomHand} owner={BottomOwner} isCurrentTurn={displayTurn === BottomOwner} onSelectPiece={(p) => handleHandPieceClick(p, BottomOwner)} selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null} />
@@ -684,7 +652,6 @@ const App: React.FC = () => {
         <div className="w-full max-w-lg flex flex-col gap-2 mt-2">
           {gameStatus !== 'playing' ? (
             <div className="flex flex-col gap-2 bg-stone-900/50 p-2 rounded border border-stone-800">
-              {/* コントロール列 */}
               <div className="flex items-center justify-between">
                 <div className="flex gap-2 items-center">
                   <div className="text-stone-400 text-xs font-mono">{viewIndex}手目</div>
@@ -721,15 +688,22 @@ const App: React.FC = () => {
                )}
                {(gameStatus === 'finished' || gameStatus === 'analysis') && (
                  <>
-                   <button onClick={requestUndo} className="bg-stone-700 text-stone-300 px-3 py-1 rounded text-xs hover:bg-stone-600">1手戻す</button>
+                   {/* 1. 1手削除 */}
+                   <button onClick={requestUndo} className="bg-stone-700 text-stone-300 px-3 py-1 rounded text-xs hover:bg-stone-600">1手削除</button>
+                   
+                   {/* 2. 初期局面へ */}
+                   <button onClick={requestReset} className="bg-red-900/30 text-red-300 px-3 py-1 rounded text-xs hover:bg-red-900/50">初期局面へ</button>
+
+                   {/* 3. 再対局 (対局者の場合) */}
                    {(myRole === 'sente' || myRole === 'gote') && (
                      <div className="flex flex-col items-center relative">
                        <button onClick={requestRematch} className={`px-3 py-1 rounded text-xs shadow font-bold transition-colors ${rematchRequests[myRole] ? 'bg-amber-800 text-stone-400' : 'bg-amber-700 text-white hover:bg-amber-600'}`} disabled={rematchRequests[myRole]}>{rematchRequests[myRole] ? "相手待ち..." : "再対局"}</button>
                        {rematchRequests[myRole === 'sente' ? 'gote' : 'sente'] && (<span className="text-[10px] text-green-400 absolute -top-4 w-full text-center animate-bounce font-bold">相手OK!</span>)}
                      </div>
                    )}
+                   
+                   {/* 3. 再対局待ち (観戦者の場合) */}
                    {myRole === 'audience' && <div className="text-[10px] text-stone-500">再対局待ち...</div>}
-                   <button onClick={requestReset} className="bg-red-900/30 text-red-300 px-3 py-1 rounded text-xs hover:bg-red-900/50">リセット</button>
                  </>
                )}
              </div>

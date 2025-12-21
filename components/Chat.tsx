@@ -1,104 +1,88 @@
-// components/Chat.tsx
 import React, { useState, useEffect, useRef } from 'react';
-import { Player } from '../types';
 
-interface ChatMessage {
-  id: string;
-  text: string;
-  role: 'sente' | 'gote' | 'audience';
-  timestamp: number;
-}
-
+// メッセージ型定義に userName を追加
 interface ChatProps {
-  messages: ChatMessage[];
+  messages: { id: string, text: string, role: string, userName?: string, timestamp: number }[]; 
   onSendMessage: (text: string) => void;
-  myRole: 'sente' | 'gote' | 'audience';
+  myRole: string;
 }
 
 const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, myRole }) => {
   const [input, setInput] = useState("");
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // ★変更: コンテナ全体のrefに変更
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // 新しいメッセージが来たら自動スクロール
+  // ★変更: scrollIntoView をやめ、scrollTop を操作する方式に変更
+  // これにより、画面全体がガクッと動くのを防ぎます
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
   }, [messages]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
-    onSendMessage(input);
-    setInput("");
-  };
-
-  const getRoleLabel = (role: string) => {
-    switch(role) {
-      case 'sente': return '☗ 先手';
-      case 'gote': return '☖ 後手';
-      default: return '観戦';
+    if (input.trim()) {
+      onSendMessage(input);
+      setInput("");
     }
   };
 
-  const getRoleColor = (role: string) => {
-    switch(role) {
-      case 'sente': return 'text-stone-300'; // 黒っぽい色（ダークモードなので明るいグレー）
-      case 'gote': return 'text-stone-300';
-      default: return 'text-green-400';
-    }
+  const getRoleLabel = (r: string) => {
+      if (r === 'sente') return '先手';
+      if (r === 'gote') return '後手';
+      return '観戦';
   };
-
+  
   return (
-    <div className="flex flex-col h-full bg-stone-900 border border-stone-700 rounded-lg overflow-hidden shadow-lg w-full max-w-sm">
-      {/* ヘッダー */}
-      <div className="bg-stone-800 p-2 border-b border-stone-700 font-bold text-stone-400 text-sm text-center">
+    <div className="flex flex-col h-full bg-stone-900 border border-stone-700 rounded-lg overflow-hidden">
+      <div className="bg-stone-800 p-2 border-b border-stone-700 text-stone-300 text-sm font-bold">
         チャット
       </div>
-
-      {/* メッセージログ */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3 bg-stone-900/50">
-        {messages.length === 0 && (
-           <div className="text-center text-stone-600 text-xs mt-4">まだメッセージはありません</div>
-        )}
+      
+      {/* ★変更: refをここに設定 */}
+      <div ref={containerRef} className="flex-1 overflow-y-auto p-2 space-y-2">
         {messages.map((msg) => {
-          const isMe = msg.role === myRole;
-          return (
-            <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-              <div className="flex items-baseline gap-2 mb-1">
-                <span className={`text-[10px] font-bold ${getRoleColor(msg.role)}`}>
-                  {getRoleLabel(msg.role)}
-                </span>
+            const isMe = msg.role === myRole;
+            const isSystem = msg.role === 'system';
+
+            if (isSystem) {
+                return (
+                    <div key={msg.id} className="text-center text-xs text-stone-500 py-1 opacity-70">
+                        -- {msg.text} --
+                    </div>
+                );
+            }
+
+            return (
+              <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                {/* ★変更: roleだけでなく、userNameを表示 */}
+                <div className={`text-[10px] mb-0.5 flex gap-1 ${isMe ? 'text-stone-400' : 'text-stone-500'}`}>
+                   <span className="font-bold">{msg.userName || "不明"}</span>
+                   <span>({getRoleLabel(msg.role)})</span>
+                </div>
+                
+                <div className={`px-3 py-2 rounded max-w-[90%] text-sm break-words shadow-sm ${
+                    msg.role === 'sente' ? 'bg-amber-100 text-stone-900 border border-amber-200' :
+                    msg.role === 'gote' ? 'bg-stone-700 text-stone-100 border border-stone-600' :
+                    'bg-stone-800 text-stone-300 border border-stone-700'
+                }`}>
+                  {msg.text}
+                </div>
               </div>
-              <div className={`
-                max-w-[85%] px-3 py-2 rounded-lg text-sm break-words
-                ${isMe 
-                  ? 'bg-amber-800/60 text-amber-50 border border-amber-700/50 rounded-tr-none' 
-                  : 'bg-stone-800 text-stone-300 border border-stone-700 rounded-tl-none'}
-              `}>
-                {msg.text}
-              </div>
-            </div>
-          );
+            );
         })}
       </div>
 
-      {/* 入力フォーム */}
       <form onSubmit={handleSubmit} className="p-2 bg-stone-800 border-t border-stone-700 flex gap-2">
-        <input
-          type="text"
+        <input 
+          type="text" 
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="メッセージを入力..."
-          className="flex-1 bg-stone-900 border border-stone-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-600"
+          className="flex-1 bg-stone-900 border border-stone-600 rounded px-2 py-1 text-white text-sm focus:outline-none focus:border-amber-600"
+          placeholder="メッセージ..."
         />
-        <button 
-          type="submit" 
-          disabled={!input.trim()}
-          className="bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white px-4 py-1 rounded text-sm font-bold transition-colors"
-        >
-          送信
-        </button>
+        <button type="submit" className="bg-amber-700 hover:bg-amber-600 text-white px-3 py-1 rounded text-sm font-bold">送信</button>
       </form>
     </div>
   );
