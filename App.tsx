@@ -19,6 +19,12 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 const socket: Socket = io(BACKEND_URL, {
   transports: ['websocket', 'polling'],
   autoConnect: false,
+  // ★追加: 再接続の設定を明示的に強化
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  timeout: 20000,
 });
 
 const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -250,12 +256,19 @@ const App: React.FC = () => {
     if (!joined || !userId) return;
 
     socket.connect();
-    socket.emit("join_room", { 
-      roomId, 
-      mode: isAnalysisRoom ? 'analysis' : 'normal', 
-      userId, 
-      userName: userName.trim() || "名無し" 
-    });
+    
+    // ★重要: 接続（再接続）時にルーム情報を再送信する処理
+    const handleConnect = () => {
+        socket.emit("join_room", { 
+            roomId, 
+            mode: isAnalysisRoom ? 'analysis' : 'normal', 
+            userId, 
+            userName: userName.trim() || "名無し" 
+        });
+    };
+
+    // 初回接続・再接続の両方で実行される
+    socket.on("connect", handleConnect);
 
     socket.on("sync", (data: any) => {
       isProcessingMove.current = false;
@@ -343,7 +356,6 @@ const App: React.FC = () => {
       setChatMessages(prev => [...prev, msg]);
     });
 
-    // ★追加: 接続エラー系のデバッグ表示
     const addSystemMessage = (text: string) => {
         setChatMessages(prev => [...prev, {
             id: Math.random().toString(),
@@ -359,6 +371,7 @@ const App: React.FC = () => {
     socket.on("reconnect", () => addSystemMessage("再接続しました"));
 
     return () => {
+      socket.off("connect", handleConnect); // ★重要: リスナー解除
       socket.off("sync");
       socket.off("player_names_updated");
       socket.off("settings_updated");
@@ -369,7 +382,6 @@ const App: React.FC = () => {
       socket.off("game_finished");
       socket.off("move");
       socket.off("receive_message");
-      // ★追加: イベントリスナーの解除
       socket.off("connect_error");
       socket.off("disconnect");
       socket.off("reconnect_attempt");
@@ -456,7 +468,6 @@ const App: React.FC = () => {
     navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
   };
   
-  // ★修正: userId も送信
   const handleSendMessage = (text: string) => {
     socket.emit("send_message", { roomId, message: text, role: myRole, userName, userId });
   };
@@ -736,7 +747,6 @@ const App: React.FC = () => {
 
       {/* --- 右側 (チャットエリア) --- */}
       <div className="w-full max-w-lg lg:max-w-xs h-[400px] lg:h-[600px] shrink-0">
-        {/* ★修正: userId を渡す */}
         <Chat messages={chatMessages} onSendMessage={handleSendMessage} myRole={myRole} userId={userId} />
       </div>
 
