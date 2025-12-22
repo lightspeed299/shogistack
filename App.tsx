@@ -19,7 +19,6 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 const socket: Socket = io(BACKEND_URL, {
   transports: ['websocket', 'polling'],
   autoConnect: false,
-  // ★追加: 再接続の設定を明示的に強化
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
@@ -119,6 +118,7 @@ const App: React.FC = () => {
   const [joined, setJoined] = useState(false);
   const [myRole, setMyRole] = useState<Role>('audience');
   const [playerNames, setPlayerNames] = useState<{sente: string | null, gote: string | null}>({sente: null, gote: null});
+  const [userCounts, setUserCounts] = useState<{global: number, room: number}>({ global: 0, room: 0 });
   const [readyStatus, setReadyStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
   const [rematchRequests, setRematchRequests] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
   const [isFlipped, setIsFlipped] = useState(false);
@@ -253,108 +253,125 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!joined || !userId) return;
+    // ★修正: 入室前でも userId があれば接続する
+    if (!userId) return;
 
     socket.connect();
     
-    // ★重要: 接続（再接続）時にルーム情報を再送信する処理
+    // 再接続時などの処理
     const handleConnect = () => {
+        if (joined) {
+            socket.emit("join_room", { 
+                roomId, 
+                mode: isAnalysisRoom ? 'analysis' : 'normal', 
+                userId, 
+                userName: userName.trim() || "名無し" 
+            });
+        }
+    };
+
+    socket.on("connect", handleConnect);
+
+    // ★追加: グローバルな人数更新は常時リッスン
+    socket.on("update_global_count", (count: number) => setUserCounts(prev => ({ ...prev, global: count })));
+
+    if (joined) {
         socket.emit("join_room", { 
             roomId, 
             mode: isAnalysisRoom ? 'analysis' : 'normal', 
             userId, 
             userName: userName.trim() || "名無し" 
         });
-    };
 
-    // 初回接続・再接続の両方で実行される
-    socket.on("connect", handleConnect);
+        socket.on("sync", (data: any) => {
+          isProcessingMove.current = false;
+          setHistory(data.history);
+          setGameStatus(data.status);
+          setWinner(data.winner as Player | null);
+          setReadyStatus(data.ready || {sente: false, gote: false});
+          setRematchRequests(data.rematchRequests || {sente: false, gote: false});
+          setViewIndex(data.history.length);
+          if (data.settings) setSettings(data.settings);
+          if (data.times) {
+             setTimes(data.times);
+             lastServerTimeData.current = { times: data.times, byoyomi: {sente:30, gote:30}, receivedAt: Date.now() };
+          }
+          if (data.yourRole) setMyRole(data.yourRole as Role);
+          if (data.playerNames) setPlayerNames(data.playerNames);
+        });
 
-    socket.on("sync", (data: any) => {
-      isProcessingMove.current = false;
-      setHistory(data.history);
-      setGameStatus(data.status);
-      setWinner(data.winner as Player | null);
-      setReadyStatus(data.ready || {sente: false, gote: false});
-      setRematchRequests(data.rematchRequests || {sente: false, gote: false});
-      setViewIndex(data.history.length);
-      if (data.settings) setSettings(data.settings);
-      if (data.times) {
-         setTimes(data.times);
-         lastServerTimeData.current = { times: data.times, byoyomi: {sente:30, gote:30}, receivedAt: Date.now() };
-      }
-      if (data.yourRole) setMyRole(data.yourRole as Role);
-      if (data.playerNames) setPlayerNames(data.playerNames);
-    });
+        socket.on("player_names_updated", (names: {sente: string | null, gote: string | null}) => {
+            setPlayerNames(names);
+        });
 
-    socket.on("player_names_updated", (names: {sente: string | null, gote: string | null}) => {
-        setPlayerNames(names);
-    });
+        socket.on("settings_updated", (newSettings: TimeSettings) => setSettings(newSettings));
+        socket.on("ready_status", (ready: {sente: boolean, gote: boolean}) => setReadyStatus(ready));
+        socket.on("rematch_status", (req: {sente: boolean, gote: boolean}) => setRematchRequests(req));
+        
+        socket.on("time_update", (data: { times: any, currentByoyomi: any }) => {
+          lastServerTimeData.current = {
+            times: data.times,
+            byoyomi: data.currentByoyomi,
+            receivedAt: Date.now()
+          };
+        });
 
-    socket.on("settings_updated", (newSettings: TimeSettings) => setSettings(newSettings));
-    socket.on("ready_status", (ready: {sente: boolean, gote: boolean}) => setReadyStatus(ready));
-    socket.on("rematch_status", (req: {sente: boolean, gote: boolean}) => setRematchRequests(req));
-    
-    socket.on("time_update", (data: { times: any, currentByoyomi: any }) => {
-      lastServerTimeData.current = {
-        times: data.times,
-        byoyomi: data.currentByoyomi,
-        receivedAt: Date.now()
-      };
-    });
+        // ルーム人数は入室中のみ
+        socket.on("update_room_count", (count: number) => setUserCounts(prev => ({ ...prev, room: count })));
 
-    socket.on("game_started", () => {
-      isProcessingMove.current = false;
-      setIsLocalMode(false);
-      isLocalModeRef.current = false;
-      setHistory([]);
-      setGameStatus('playing');
-      setWinner(null);
-      setRematchRequests({sente: false, gote: false});
-      setViewIndex(0);
-      playSound('alert');
-      alert("対局開始！お願いします。");
-    });
+        socket.on("game_started", () => {
+          isProcessingMove.current = false;
+          setIsLocalMode(false);
+          isLocalModeRef.current = false;
+          setHistory([]);
+          setGameStatus('playing');
+          setWinner(null);
+          setRematchRequests({sente: false, gote: false});
+          setViewIndex(0);
+          playSound('alert');
+          alert("対局開始！お願いします。");
+        });
 
-    socket.on("game_finished", (data: { winner: Player | null, reason?: string }) => {
-      isProcessingMove.current = false;
-      setGameStatus('finished');
-      setWinner(data.winner);
-      playSound('timeout');
-      let msg = "終局！";
-      if (data.reason === 'illegal_sennichite') {
-         msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (連続王手の千日手)`;
-      } else if (data.reason === 'sennichite') {
-         msg += " 千日手が成立しました（引き分け）";
-      } else if (data.reason === 'timeout') {
-         msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (時間切れ)`;
-      } else {
-         msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち`;
-      }
-      alert(msg);
-    });
+        socket.on("game_finished", (data: { winner: Player | null, reason?: string }) => {
+          isProcessingMove.current = false;
+          setGameStatus('finished');
+          setWinner(data.winner);
+          playSound('timeout');
+          let msg = "終局！";
+          if (data.reason === 'illegal_sennichite') {
+             msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (連続王手の千日手)`;
+          } else if (data.reason === 'sennichite') {
+             msg += " 千日手が成立しました（引き分け）";
+          } else if (data.reason === 'timeout') {
+             msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (時間切れ)`;
+          } else {
+             msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち`;
+          }
+          alert(msg);
+        });
 
-    socket.on("move", (move: Move) => {
-      if (isLocalModeRef.current) return;
-      isProcessingMove.current = false;
-      lastServerTimeData.current = null; 
-      setHistory(prev => {
-        const last = prev[prev.length - 1];
-        if (last && isSameMove(last, move)) {
-          const newHistory = [...prev];
-          newHistory[newHistory.length - 1] = move;
-          return newHistory;
-        }
-        playSound('move');
-        const newHistory = [...prev, move];
-        setViewIndex(newHistory.length); 
-        return newHistory;
-      });
-    });
+        socket.on("move", (move: Move) => {
+          if (isLocalModeRef.current) return;
+          isProcessingMove.current = false;
+          lastServerTimeData.current = null; 
+          setHistory(prev => {
+            const last = prev[prev.length - 1];
+            if (last && isSameMove(last, move)) {
+              const newHistory = [...prev];
+              newHistory[newHistory.length - 1] = move;
+              return newHistory;
+            }
+            playSound('move');
+            const newHistory = [...prev, move];
+            setViewIndex(newHistory.length); 
+            return newHistory;
+          });
+        });
 
-    socket.on("receive_message", (msg: any) => {
-      setChatMessages(prev => [...prev, msg]);
-    });
+        socket.on("receive_message", (msg: any) => {
+          setChatMessages(prev => [...prev, msg]);
+        });
+    }
 
     const addSystemMessage = (text: string) => {
         setChatMessages(prev => [...prev, {
@@ -371,13 +388,15 @@ const App: React.FC = () => {
     socket.on("reconnect", () => addSystemMessage("再接続しました"));
 
     return () => {
-      socket.off("connect", handleConnect); // ★重要: リスナー解除
+      socket.off("connect", handleConnect);
       socket.off("sync");
       socket.off("player_names_updated");
       socket.off("settings_updated");
       socket.off("ready_status");
       socket.off("rematch_status");
       socket.off("time_update");
+      socket.off("update_global_count");
+      socket.off("update_room_count");
       socket.off("game_started");
       socket.off("game_finished");
       socket.off("move");
@@ -386,7 +405,8 @@ const App: React.FC = () => {
       socket.off("disconnect");
       socket.off("reconnect_attempt");
       socket.off("reconnect");
-      socket.disconnect();
+      // 依存配列が変わったとき(入室時)は disconnect しない (接続維持)
+      // ただしコンポーネントのアンマウント時は切りたいが、Appはルートなので基本アンマウントされない
     };
   }, [joined, roomId, userId]); 
 
@@ -576,9 +596,15 @@ const App: React.FC = () => {
 
   if (!joined) {
     return (
-      <div className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-stone-900 flex items-center justify-center p-4 relative">
         <form onSubmit={handleJoin} className="bg-stone-800 p-8 rounded-lg shadow-xl border border-amber-700/30 max-w-sm w-full space-y-4">
-          <h1 className="text-2xl font-bold text-amber-100 text-center font-serif">ShogiStack</h1>
+          <div className="text-center">
+            <h1 className="text-2xl font-bold text-amber-100 font-serif">ShogiStack</h1>
+            {/* ★追加: ログイン画面での全体人数表示 */}
+            <div className="text-xs text-stone-500 mt-1 font-mono">
+                 🟢オンライン：<span className="text-green-400 font-bold">{userCounts.global}</span> 
+            </div>
+          </div>
           <div>
             <label className="block text-stone-400 text-sm mb-2">ルーム名</label>
             <input 
@@ -618,6 +644,14 @@ const App: React.FC = () => {
         {/* Header Info */}
         <div className="w-full max-w-lg flex justify-between items-center text-stone-400 text-sm px-1 mb-1">
           <div>Room: <span className="text-amber-200 font-mono">{roomId}</span></div>
+          
+          {/* ★追加: ルーム内の人数表示 (観戦者数は単純計算で概算) */}
+          <div className="text-xs text-stone-500 font-mono flex gap-2">
+             <span title="現在の部屋にいる人数">
+                入室中 {userCounts.room}人 <span className="text-stone-600">(観戦 {Math.max(0, userCounts.room - 2)})</span>
+             </span>
+          </div>
+
           <div className={`px-3 py-1 rounded text-xs font-bold border
               ${gameStatus === 'playing' ? 'bg-green-900 text-green-100 border-green-700' : 
                 gameStatus === 'waiting' ? 'bg-blue-900 text-blue-100 border-blue-700' :
