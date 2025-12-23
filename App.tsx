@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
 import ShogiBoard from './components/ShogiBoard';
 import Komadai from './components/Komadai';
 import Chat from './components/Chat';
 import { BoardState, Coordinates, Hand, Move, PieceType, Player } from './types';
 import { createInitialBoard, isValidMove, applyMove, exportKIF } from './utils/shogiUtils';
 import { SENTE_PROMOTION_ZONE, GOTE_PROMOTION_ZONE } from './constants';
+import { playSound } from './utils/soundUtils';
+import { useGameSocket } from './hooks/useGameSocket';
 
 const EMPTY_HAND = {
   [PieceType.Pawn]: 0, [PieceType.Lance]: 0, [PieceType.Knight]: 0, [PieceType.Silver]: 0,
@@ -14,100 +15,10 @@ const EMPTY_HAND = {
   [PieceType.PromotedSilver]: 0, [PieceType.Horse]: 0, [PieceType.Dragon]: 0,
 };
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
-
-const socket: Socket = io(BACKEND_URL, {
-  transports: ['websocket', 'polling'], 
-  autoConnect: false,
-  reconnection: true,
-  reconnectionAttempts: Infinity,
-  reconnectionDelay: 1000,
-  reconnectionDelayMax: 5000,
-  timeout: 20000,
-});
-
-const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-const bufferSize = audioCtx.sampleRate * 2.0;
-const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-const output = noiseBuffer.getChannelData(0);
-for (let i = 0; i < bufferSize; i++) {
-  output[i] = Math.random() * 2 - 1;
-}
-
-const playSound = (type: 'move' | 'alert' | 'timeout') => {
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  const now = audioCtx.currentTime;
-
-  if (type === 'move') {
-    const noise = audioCtx.createBufferSource();
-    noise.buffer = noiseBuffer;
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(8000, now); 
-    const gain = audioCtx.createGain();
-    gain.gain.setValueAtTime(1.0, now);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.015); 
-    const osc = audioCtx.createOscillator();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(600, now); 
-    const oscGain = audioCtx.createGain();
-    oscGain.gain.setValueAtTime(0.15, now);
-    oscGain.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
-    noise.connect(filter);
-    filter.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.connect(oscGain);
-    oscGain.connect(audioCtx.destination);
-    noise.start(now);
-    noise.stop(now + 0.1);
-    osc.start(now);
-    osc.stop(now + 0.1);
-  } else if (type === 'alert') {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.frequency.setValueAtTime(1000, now);
-    gain.gain.setValueAtTime(0.3, now);
-    gain.gain.linearRampToValueAtTime(0.01, now + 0.1);
-    osc.start(now);
-    osc.stop(now + 0.1);
-  } else if (type === 'timeout') {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.frequency.setValueAtTime(400, now);
-    osc.frequency.linearRampToValueAtTime(100, now + 1.0);
-    gain.gain.setValueAtTime(0.5, now);
-    gain.gain.linearRampToValueAtTime(0.01, now + 1.0);
-    osc.start(now);
-    osc.stop(now + 1.0);
-  }
-};
-
-type GameStatus = 'waiting' | 'playing' | 'finished' | 'analysis';
-type Role = 'sente' | 'gote' | 'audience';
-
-interface TimeSettings {
-  initial: number;
-  byoyomi: number;
-  randomTurn: boolean;
-  fixTurn: boolean;
-}
-
 const formatTime = (seconds: number) => {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-};
-
-const isSameMove = (a: Move, b: Move) => {
-  const fromA = typeof a.from === 'string' ? a.from : `${a.from.x},${a.from.y}`;
-  const fromB = typeof b.from === 'string' ? b.from : `${b.from.x},${b.from.y}`;
-  return fromA === fromB &&
-         a.to.x === b.to.x && a.to.y === b.to.y &&
-         a.piece === b.piece && a.drop === b.drop && !!a.isPromoted === !!b.isPromoted;
 };
 
 const App: React.FC = () => {
@@ -116,36 +27,30 @@ const App: React.FC = () => {
   const [userName, setUserName] = useState<string>("");
   const [isAnalysisRoom, setIsAnalysisRoom] = useState(false);
   const [joined, setJoined] = useState(false);
-  const [myRole, setMyRole] = useState<Role>('audience');
-  const [playerNames, setPlayerNames] = useState<{sente: string | null, gote: string | null}>({sente: null, gote: null});
-  const [connectionStatus, setConnectionStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
-  const [userCounts, setUserCounts] = useState<{global: number, room: number}>({ global: 0, room: 0 });
-  const [readyStatus, setReadyStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
-  const [rematchRequests, setRematchRequests] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
+  
+  // UI関連のState
   const [isFlipped, setIsFlipped] = useState(false);
-  const [gameStatus, setGameStatus] = useState<GameStatus>('waiting');
-  const [winner, setWinner] = useState<Player | null>(null);
-  const [initialBoard] = useState<BoardState>(createInitialBoard());
-  const [settings, setSettings] = useState<TimeSettings>({ initial: 600, byoyomi: 30, randomTurn: false, fixTurn: false });
-  const [times, setTimes] = useState<{sente: number, gote: number}>({sente: 600, gote: 600});
-  const [byoyomi, setByoyomi] = useState<{sente: number, gote: number}>({sente: 30, gote: 30});
-  const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [displayBoard, setDisplayBoard] = useState<BoardState>(createInitialBoard());
   const [displayHands, setDisplayHands] = useState<{ sente: Hand; gote: Hand }>({
     sente: { ...EMPTY_HAND }, gote: { ...EMPTY_HAND },
   });
   const [displayTurn, setDisplayTurn] = useState<Player>('sente'); 
   const [displayLastMove, setDisplayLastMove] = useState<{ from: Coordinates | 'hand'; to: Coordinates } | null>(null);
-  const [history, setHistory] = useState<Move[]>([]);
   const [viewIndex, setViewIndex] = useState<number>(0); 
   const [selectedSquare, setSelectedSquare] = useState<Coordinates | null>(null);
   const [selectedHandPiece, setSelectedHandPiece] = useState<PieceType | null>(null);
   const [promotionCandidate, setPromotionCandidate] = useState<{ move: Move } | null>(null);
-  const [isLocalMode, setIsLocalMode] = useState(false);
-  const isLocalModeRef = useRef(false);
-  const lastServerTimeData = useRef<{ times: {sente: number, gote: number}, byoyomi: {sente: number, gote: number}, receivedAt: number } | null>(null);
-  const lastSoundTime = useRef<number | null>(null);
+  const [isLocalMode, setIsLocalModeState] = useState(false);
   const isProcessingMove = useRef(false);
+  const lastSoundTime = useRef<number | null>(null);
+
+  // フックから通信機能と状態を取得
+  const {
+    gameStatus, history, setHistory, myRole, playerNames, winner, readyStatus, rematchRequests,
+    settings, times, setTimes, byoyomi, setByoyomi, chatMessages, userCounts, connectionStatus,
+    lastServerTimeData, isLocalModeRef,
+    updateSettings, toggleReady, resignGame, sendMove, requestUndo, requestUndoForce, requestReset, requestRematch, sendMessage, setIsLocalMode
+  } = useGameSocket(roomId, userId, userName, isAnalysisRoom, joined);
 
   useEffect(() => {
     let storedId = localStorage.getItem('shogi_user_id');
@@ -156,6 +61,7 @@ const App: React.FC = () => {
     setUserId(storedId);
   }, []);
 
+  // 盤面描画の更新
   const updateDisplay = useCallback((moves: Move[], index: number) => {
     let currentBoard = createInitialBoard();
     let currentHands = { sente: { ...EMPTY_HAND }, gote: { ...EMPTY_HAND } };
@@ -181,18 +87,18 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    updateDisplay(history, viewIndex);
-  }, [history, viewIndex, updateDisplay]);
-
-  // ★修正: 役割が決まったら（後手なら）自動反転
-  useEffect(() => {
-    if (myRole === 'gote') {
-      setIsFlipped(true);
-    } else if (myRole === 'sente') {
-      setIsFlipped(false);
+    if (!isLocalMode) {
+        setViewIndex(history.length);
     }
+    updateDisplay(history, viewIndex);
+  }, [history, viewIndex, updateDisplay, isLocalMode]);
+
+  useEffect(() => {
+    if (myRole === 'gote') setIsFlipped(true);
+    else if (myRole === 'sente') setIsFlipped(false);
   }, [myRole]);
 
+  // タイマーのクライアント側カウントダウン処理
   useEffect(() => {
     if (gameStatus !== 'playing') return;
     const interval = setInterval(() => {
@@ -202,8 +108,10 @@ const App: React.FC = () => {
       const serverTimes = lastServerTimeData.current.times;
       const serverByoyomi = lastServerTimeData.current.byoyomi;
       const currentPlayer = displayTurn;
+      
       let newTime = serverTimes[currentPlayer];
       let newByoyomi = serverByoyomi[currentPlayer];
+      
       if (newTime > 0) {
         newTime = Math.max(0, Math.ceil(serverTimes[currentPlayer] - elapsedSec));
       } else {
@@ -223,8 +131,9 @@ const App: React.FC = () => {
       }));
     }, 100); 
     return () => clearInterval(interval);
-  }, [gameStatus, displayTurn]);
+  }, [gameStatus, displayTurn, lastServerTimeData, setTimes, setByoyomi]);
 
+  // 秒読み音
   useEffect(() => {
     if (gameStatus !== 'playing') {
         lastSoundTime.current = null;
@@ -243,191 +152,25 @@ const App: React.FC = () => {
     }
   }, [times, byoyomi, gameStatus, displayTurn]);
 
-  const toggleLocalMode = () => {
+  const toggleLocalModeWrapper = () => {
     if (isLocalMode) {
       if (window.confirm("ローカル検討を終了し、最新の同期局面に戻りますか？")) {
+        setIsLocalModeState(false);
         setIsLocalMode(false);
-        isLocalModeRef.current = false;
-        socket.emit("join_room", { roomId, mode: isAnalysisRoom ? 'analysis' : 'normal', userId, userName });
+        setViewIndex(history.length);
       }
     } else {
+      setIsLocalModeState(true);
       setIsLocalMode(true);
-      isLocalModeRef.current = true;
     }
   };
-
-  useEffect(() => {
-    if (!userId) return;
-
-    socket.connect();
-    
-    const handleConnect = () => {
-        if (joined) {
-            socket.emit("join_room", { 
-                roomId, 
-                mode: isAnalysisRoom ? 'analysis' : 'normal', 
-                userId, 
-                userName: userName.trim() || "名無し" 
-            });
-        }
-    };
-
-    socket.on("connect", handleConnect);
-    socket.on("update_global_count", (count: number) => setUserCounts(prev => ({ ...prev, global: count })));
-
-    if (joined) {
-        socket.emit("join_room", { 
-            roomId, 
-            mode: isAnalysisRoom ? 'analysis' : 'normal', 
-            userId, 
-            userName: userName.trim() || "名無し" 
-        });
-
-        socket.on("sync", (data: any) => {
-          isProcessingMove.current = false;
-          setHistory(data.history);
-          setGameStatus(data.status);
-          setWinner(data.winner as Player | null);
-          setReadyStatus(data.ready || {sente: false, gote: false});
-          setRematchRequests(data.rematchRequests || {sente: false, gote: false});
-          setViewIndex(data.history.length);
-          if (data.settings) setSettings(data.settings);
-          if (data.times) {
-             setTimes(data.times);
-             lastServerTimeData.current = { times: data.times, byoyomi: {sente:30, gote:30}, receivedAt: Date.now() };
-          }
-          if (data.yourRole) setMyRole(data.yourRole as Role);
-          if (data.playerNames) setPlayerNames(data.playerNames);
-        });
-
-        socket.on("player_names_updated", (names: {sente: string | null, gote: string | null}) => {
-            setPlayerNames(names);
-        });
-
-        socket.on("settings_updated", (newSettings: TimeSettings) => setSettings(newSettings));
-        socket.on("ready_status", (ready: {sente: boolean, gote: boolean}) => setReadyStatus(ready));
-        socket.on("rematch_status", (req: {sente: boolean, gote: boolean}) => setRematchRequests(req));
-        
-        socket.on("time_update", (data: { times: any, currentByoyomi: any }) => {
-          lastServerTimeData.current = {
-            times: data.times,
-            byoyomi: data.currentByoyomi,
-            receivedAt: Date.now()
-          };
-        });
-
-        socket.on("update_room_count", (count: number) => setUserCounts(prev => ({ ...prev, room: count })));
-        
-        socket.on("connection_status_update", (status: {sente: boolean, gote: boolean}) => {
-            setConnectionStatus(status);
-        });
-
-        socket.on("game_started", () => {
-          isProcessingMove.current = false;
-          setIsLocalMode(false);
-          isLocalModeRef.current = false;
-          setHistory([]);
-          setGameStatus('playing');
-          setWinner(null);
-          setRematchRequests({sente: false, gote: false});
-          setViewIndex(0);
-          playSound('alert');
-          alert("対局開始！お願いします。");
-        });
-
-        socket.on("game_finished", (data: { winner: Player | null, reason?: string }) => {
-          isProcessingMove.current = false;
-          setGameStatus('finished');
-          setWinner(data.winner);
-          playSound('timeout');
-          let msg = "終局！";
-          if (data.reason === 'illegal_sennichite') {
-             msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (連続王手の千日手)`;
-          } else if (data.reason === 'sennichite') {
-             msg += " 千日手が成立しました（引き分け）";
-          } else if (data.reason === 'timeout') {
-             msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (時間切れ)`;
-          } else {
-             msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち`;
-          }
-          alert(msg);
-        });
-
-        socket.on("move", (move: Move) => {
-          if (isLocalModeRef.current) return;
-          isProcessingMove.current = false;
-          lastServerTimeData.current = null; 
-          setHistory(prev => {
-            const last = prev[prev.length - 1];
-            if (last && isSameMove(last, move)) {
-              const newHistory = [...prev];
-              newHistory[newHistory.length - 1] = move;
-              return newHistory;
-            }
-            playSound('move');
-            const newHistory = [...prev, move];
-            setViewIndex(newHistory.length); 
-            return newHistory;
-          });
-        });
-
-        socket.on("receive_message", (msg: any) => {
-          setChatMessages(prev => [...prev, msg]);
-        });
-    }
-
-    const addSystemMessage = (text: string) => {
-        setChatMessages(prev => [...prev, {
-            id: Math.random().toString(),
-            text: `[DEBUG] ${text}`,
-            role: 'system',
-            timestamp: Date.now()
-        }]);
-    };
-
-    socket.on("connect_error", (err) => addSystemMessage(`接続エラー: ${err.message}`));
-    socket.on("disconnect", (reason) => addSystemMessage(`切断されました: ${reason}`));
-    socket.on("reconnect_attempt", () => addSystemMessage("再接続を試みています..."));
-    socket.on("reconnect", () => addSystemMessage("再接続しました"));
-
-    return () => {
-      socket.off("connect", handleConnect);
-      socket.off("sync");
-      socket.off("player_names_updated");
-      socket.off("settings_updated");
-      socket.off("ready_status");
-      socket.off("rematch_status");
-      socket.off("time_update");
-      socket.off("update_global_count");
-      socket.off("update_room_count");
-      socket.off("connection_status_update");
-      socket.off("game_started");
-      socket.off("game_finished");
-      socket.off("move");
-      socket.off("receive_message");
-      socket.off("connect_error");
-      socket.off("disconnect");
-      socket.off("reconnect_attempt");
-      socket.off("reconnect");
-    };
-  }, [joined, roomId, userId]); 
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
     if (roomId.trim()) setJoined(true);
   };
-  const updateSettings = (key: keyof TimeSettings, value: number | boolean) => {
-    const newSettings = { ...settings, [key]: value };
-    socket.emit("update_settings", { roomId, settings: newSettings });
-  };
-  const toggleReady = () => {
-    if (myRole === 'sente' || myRole === 'gote') socket.emit("toggle_ready", { roomId, role: myRole });
-  };
-  const resignGame = (loser: Player) => {
-    if(window.confirm("本当に投了しますか？")) socket.emit("game_resign", { roomId, loser });
-  };
 
-  const processMove = (move: Move) => {
+  const processMoveLogic = (move: Move) => {
     if (gameStatus === 'playing') {
       if (myRole !== 'sente' && myRole !== 'gote') return;
       if (myRole !== displayTurn) return;
@@ -437,6 +180,7 @@ const App: React.FC = () => {
       }
     }
     if (isProcessingMove.current) return;
+
     if (isLocalMode) {
        setHistory(prev => {
           const truncated = prev.slice(0, viewIndex);
@@ -446,13 +190,12 @@ const App: React.FC = () => {
        playSound('move');
        return;
     }
+
     isProcessingMove.current = true;
-    if (gameStatus === 'finished' || gameStatus === 'analysis') {
-       socket.emit("move", { roomId, move, branchIndex: viewIndex });
-    } else {
-       socket.emit("move", { roomId, move });
-    }
-    if ((gameStatus === 'finished' || gameStatus === 'analysis') && viewIndex < history.length) {
+    const isReview = gameStatus === 'finished' || gameStatus === 'analysis';
+    sendMove(move, viewIndex, isReview);
+
+    if (isReview && viewIndex < history.length) {
        setHistory(prev => {
           const truncated = prev.slice(0, viewIndex);
           return [...truncated, move];
@@ -460,38 +203,10 @@ const App: React.FC = () => {
     } else {
        setHistory(prev => [...prev, move]);
     }
+    
+    setTimeout(() => { isProcessingMove.current = false; }, 500);
     setViewIndex(viewIndex + 1);
     playSound('move');
-  };
-
-  const requestUndo = () => {
-    if (isLocalMode) {
-       if (viewIndex > 0) setViewIndex(viewIndex - 1);
-       return;
-    }
-    if (gameStatus === 'finished' || gameStatus === 'analysis') {
-       if (history.length === 0) return;
-       if(window.confirm("最新の1手を削除しますか？（全員に反映されます）")) socket.emit("undo", roomId);
-       return;
-    }
-    if (gameStatus === 'playing') return;
-    if (history.length === 0) return;
-    if(window.confirm("1手戻しますか？")) socket.emit("undo", roomId);
-  };
-  const requestReset = () => {
-    if(window.confirm("初期局面に戻しますか？（棋譜はすべて消えます）")) socket.emit("reset", roomId);
-  };
-  const requestRematch = () => {
-    if (myRole === 'sente' || myRole === 'gote') socket.emit("rematch", { roomId, role: myRole });
-    else alert("観戦者は提案できません");
-  };
-  const copyKIF = () => {
-    const kif = exportKIF(history, initialBoard);
-    navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
-  };
-  
-  const handleSendMessage = (text: string) => {
-    socket.emit("send_message", { roomId, message: text, role: myRole, userName, userId });
   };
 
   const handleSquareClick = (coords: Coordinates) => {
@@ -522,7 +237,7 @@ const App: React.FC = () => {
       const canPromote = !piece.isPromoted && (isEnteringZone || isLeavingZone) && 
                          piece.type !== PieceType.Gold && piece.type !== PieceType.King;
       if (mustPromote) {
-        processMove({ ...baseMove, isPromoted: true });
+        processMoveLogic({ ...baseMove, isPromoted: true });
         setSelectedSquare(null);
         return;
       }
@@ -531,7 +246,7 @@ const App: React.FC = () => {
         setSelectedSquare(null);
         return;
       }
-      processMove(baseMove);
+      processMoveLogic(baseMove);
       setSelectedSquare(null);
       return;
     }
@@ -541,7 +256,7 @@ const App: React.FC = () => {
           from: 'hand', to: coords, piece: selectedHandPiece, drop: true, isPromoted: false 
         };
         if (isValidMove(displayBoard, displayTurn, move)) {
-          processMove(move);
+          processMoveLogic(move);
         }
         setSelectedHandPiece(null);
       }
@@ -557,8 +272,13 @@ const App: React.FC = () => {
 
   const handlePromotionChoice = (promote: boolean) => {
     if (!promotionCandidate) return;
-    processMove({ ...promotionCandidate.move, isPromoted: promote });
+    processMoveLogic({ ...promotionCandidate.move, isPromoted: promote });
     setPromotionCandidate(null);
+  };
+
+  const copyKIF = () => {
+    const kif = exportKIF(history, createInitialBoard());
+    navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
   };
 
   const renderTimer = (owner: Player) => {
@@ -569,15 +289,10 @@ const App: React.FC = () => {
     
     const name = playerNames[owner] || (owner === 'sente' ? "先手" : "後手");
     const label = owner === 'sente' ? '☗ 先手' : '☖ 後手';
-
     const isWinner = winner === owner;
     const isOnline = connectionStatus[owner];
     const isMe = myRole === owner;
 
-    // ★修正: 色のロジック
-    // 1. 勝者は常に金色のまま
-    // 2. 手番なら明るく
-    // 3. それ以外は暗く
     let bgClass = "";
     if (isWinner) {
         bgClass = "bg-yellow-600 border-yellow-400 shadow-[0_0_15px_rgba(234,179,8,0.6)]";
@@ -586,45 +301,25 @@ const App: React.FC = () => {
     } else {
         bgClass = "bg-stone-900 border-stone-800 opacity-60";
     }
-
-    // 離席していても、勝者の金色は残す（グレースケールにしない）
-    // その代わり、少し透明度を下げて「いない感」を出す
     if (playerNames[owner] && !isOnline) {
         bgClass += " opacity-50"; 
     }
 
     return (
-      <div className={`
-        flex flex-col items-end px-3 py-1 rounded border-b-4 transition-all duration-500 min-w-[100px] relative
-        ${bgClass}
-      `}>
-        {/* 離席中バッジ (赤色を強調) */}
+      <div className={`flex flex-col items-end px-3 py-1 rounded border-b-4 transition-all duration-500 min-w-[100px] relative ${bgClass}`}>
         {playerNames[owner] && !isOnline && (
-            <div className="absolute -top-2 left-0 bg-red-600 text-white text-[10px] px-2 py-0.5 rounded shadow-md font-bold z-10 animate-pulse">
-                離席中
-            </div>
+            <div className="absolute -top-2 left-0 bg-red-600 text-white text-[10px] px-2 py-0.5 rounded shadow-md font-bold z-10 animate-pulse">離席中</div>
         )}
-
         <div className="flex flex-col items-end mb-1 w-full">
             <div className="flex items-center gap-1">
-                {/* ★追加: 自分バッジ */}
                 {isMe && <span className="text-[10px] bg-amber-700 text-amber-100 px-1 rounded">あなた</span>}
-                <span className="text-sm text-stone-200 font-bold truncate max-w-[100px]">
-                    {name}
-                </span>
+                <span className="text-sm text-stone-200 font-bold truncate max-w-[100px]">{name}</span>
             </div>
-            <span className="text-[10px] text-stone-500 font-mono">
-                {label}
-            </span>
+            <span className="text-[10px] text-stone-500 font-mono">{label}</span>
         </div>
-        
         <div className="flex items-baseline gap-1">
-           <span className={`font-mono text-xl ${inByoyomi ? 'text-red-400' : 'text-stone-200'}`}>
-             {formatTime(time)}
-           </span>
-           <span className={`font-mono text-sm ${inByoyomi && isTurn ? 'text-red-500 font-bold animate-pulse' : 'text-stone-500'}`}>
-             {inByoyomi ? byo : settings.byoyomi}
-           </span>
+           <span className={`font-mono text-xl ${inByoyomi ? 'text-red-400' : 'text-stone-200'}`}>{formatTime(time)}</span>
+           <span className={`font-mono text-sm ${inByoyomi && isTurn ? 'text-red-500 font-bold animate-pulse' : 'text-stone-500'}`}>{inByoyomi ? byo : settings.byoyomi}</span>
         </div>
       </div>
     );
@@ -636,27 +331,10 @@ const App: React.FC = () => {
         <form onSubmit={handleJoin} className="bg-stone-800 p-8 rounded-lg shadow-xl border border-amber-700/30 max-w-sm w-full space-y-4">
           <div className="text-center">
             <h1 className="text-2xl font-bold text-amber-100 font-serif">ShogiStack</h1>
-            <div className="text-xs text-stone-500 mt-1 font-mono">
-                🟢 現在 <span className="text-green-400 font-bold">{userCounts.global}</span> 人がオンライン
-            </div>
+            <div className="text-xs text-stone-500 mt-1 font-mono">🟢 現在 <span className="text-green-400 font-bold">{userCounts.global}</span> 人がオンライン</div>
           </div>
-          <div>
-            <label className="block text-stone-400 text-sm mb-2">ルーム名</label>
-            <input 
-              type="text" value={roomId} onChange={(e) => setRoomId(e.target.value)}
-              className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-2 text-white"
-              placeholder="room1"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-stone-400 text-sm mb-2">名前（ニックネーム）</label>
-            <input 
-              type="text" value={userName} onChange={(e) => setUserName(e.target.value)}
-              className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-2 text-white"
-              placeholder="名無し"
-            />
-          </div>
+          <div><label className="block text-stone-400 text-sm mb-2">ルーム名</label><input type="text" value={roomId} onChange={(e) => setRoomId(e.target.value)} className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-2 text-white" required /></div>
+          <div><label className="block text-stone-400 text-sm mb-2">名前</label><input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-2 text-white" /></div>
           <div className="flex items-center gap-3 p-3 bg-stone-900/50 rounded border border-stone-700">
              <input type="checkbox" id="analysisMode" checked={isAnalysisRoom} onChange={(e) => setIsAnalysisRoom(e.target.checked)} className="w-5 h-5 accent-amber-600" />
              <label htmlFor="analysisMode" className="text-stone-300 text-sm cursor-pointer">検討室モード</label>
@@ -675,39 +353,19 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-center justify-start lg:justify-center p-2 gap-4 relative">
       <div className="flex flex-col items-center w-full max-w-lg shrink-0">
-        
-        {/* Header Info */}
         <div className="w-full max-w-lg flex justify-between items-center text-stone-400 text-sm px-1 mb-1">
           <div>Room: <span className="text-amber-200 font-mono">{roomId}</span></div>
-          
-          <div className="text-xs text-stone-500 font-mono flex gap-2">
-             <span title="現在の部屋にいる人数">
-                👤 {userCounts.room}人 <span className="text-stone-600">(観戦 {Math.max(0, userCounts.room - 2)})</span>
-             </span>
-          </div>
-
-          <div className={`px-3 py-1 rounded text-xs font-bold border
-              ${gameStatus === 'playing' ? 'bg-green-900 text-green-100 border-green-700' : 
-                gameStatus === 'waiting' ? 'bg-blue-900 text-blue-100 border-blue-700' :
-                'bg-stone-700 text-stone-300 border-stone-600'}
-          `}>
-            {gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}
-          </div>
+          <div className="text-xs text-stone-500 font-mono flex gap-2"><span title="部屋人数">👤 {userCounts.room}人 <span className="text-stone-600">(観戦 {Math.max(0, userCounts.room - 2)})</span></span></div>
+          <div className={`px-3 py-1 rounded text-xs font-bold border ${gameStatus === 'playing' ? 'bg-green-900 text-green-100 border-green-700' : gameStatus === 'waiting' ? 'bg-blue-900 text-blue-100 border-blue-700' : 'bg-stone-700 text-stone-300 border-stone-600'}`}>{gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}</div>
         </div>
 
-        {/* --- Top Area (相手) --- */}
         <div className="w-full max-w-lg flex items-end justify-between mb-1 gap-2">
-          <div className="flex-1 min-w-0">
-             <Komadai hand={TopHand} owner={TopOwner} isCurrentTurn={displayTurn === TopOwner} onSelectPiece={(p) => handleHandPieceClick(p, TopOwner)} selectedPiece={displayTurn === TopOwner ? selectedHandPiece : null} />
-          </div>
+          <div className="flex-1 min-w-0"><Komadai hand={TopHand} owner={TopOwner} isCurrentTurn={displayTurn === TopOwner} onSelectPiece={(p) => handleHandPieceClick(p, TopOwner)} selectedPiece={displayTurn === TopOwner ? selectedHandPiece : null} /></div>
           <div>{renderTimer(TopOwner)}</div>
         </div>
 
-        {/* --- Board --- */}
         <div className="w-full max-w-lg relative" style={{ transition: 'transform 0.5s', transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
-          <ShogiBoard 
-            board={displayBoard} onSquareClick={handleSquareClick} selectedSquare={selectedSquare} validMoves={[]} lastMove={displayLastMove} turn={displayTurn}
-          />
+          <ShogiBoard board={displayBoard} onSquareClick={handleSquareClick} selectedSquare={selectedSquare} validMoves={[]} lastMove={displayLastMove} turn={displayTurn} />
           {promotionCandidate && (
             <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none" style={{ transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
               <div className="pointer-events-auto bg-stone-800/95 p-3 rounded-lg border border-amber-500 shadow-[0_0_20px_rgba(0,0,0,0.5)] flex gap-4 animate-in fade-in zoom-in duration-100">
@@ -721,22 +379,10 @@ const App: React.FC = () => {
                <div className="bg-stone-900/95 p-6 rounded-xl border border-amber-600 shadow-2xl text-center w-72">
                  <h2 className="text-amber-100 font-bold text-xl mb-4">対局設定</h2>
                  <div className="mb-6 space-y-4 text-left">
-                    <div>
-                      <label className="text-xs text-stone-400 flex justify-between"><span>持ち時間</span><span className="text-amber-400 font-mono">{Math.floor(settings.initial/60)}分</span></label>
-                      <input type="range" min="0" max="3600" step="60" value={settings.initial} onChange={(e) => updateSettings('initial', Number(e.target.value))} className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"/>
-                    </div>
-                    <div>
-                      <label className="text-xs text-stone-400 flex justify-between"><span>秒読み</span><span className="text-amber-400 font-mono">{settings.byoyomi}秒</span></label>
-                      <input type="range" min="0" max="60" step="10" value={settings.byoyomi} onChange={(e) => updateSettings('byoyomi', Number(e.target.value))} className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"/>
-                    </div>
-                    <div className="flex items-center justify-between">
-                       <label className="text-xs text-stone-400">振り駒 (ランダム)</label>
-                       <input type="checkbox" checked={settings.randomTurn} onChange={(e) => updateSettings('randomTurn', e.target.checked)} className="w-4 h-4 accent-amber-600 cursor-pointer"/>
-                    </div>
-                    <div className={`flex items-center justify-between transition-opacity ${settings.randomTurn ? 'opacity-100' : 'opacity-30 pointer-events-none'}`}>
-                       <label className="text-xs text-stone-400">再対局で固定</label>
-                       <input type="checkbox" checked={settings.fixTurn} onChange={(e) => updateSettings('fixTurn', e.target.checked)} className="w-4 h-4 accent-amber-600 cursor-pointer" disabled={!settings.randomTurn}/>
-                    </div>
+                    <div><label className="text-xs text-stone-400 flex justify-between"><span>持ち時間</span><span className="text-amber-400 font-mono">{Math.floor(settings.initial/60)}分</span></label><input type="range" min="0" max="3600" step="60" value={settings.initial} onChange={(e) => updateSettings('initial', Number(e.target.value))} className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"/></div>
+                    <div><label className="text-xs text-stone-400 flex justify-between"><span>秒読み</span><span className="text-amber-400 font-mono">{settings.byoyomi}秒</span></label><input type="range" min="0" max="60" step="10" value={settings.byoyomi} onChange={(e) => updateSettings('byoyomi', Number(e.target.value))} className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"/></div>
+                    <div className="flex items-center justify-between"><label className="text-xs text-stone-400">振り駒 (ランダム)</label><input type="checkbox" checked={settings.randomTurn} onChange={(e) => updateSettings('randomTurn', e.target.checked)} className="w-4 h-4 accent-amber-600 cursor-pointer"/></div>
+                    <div className={`flex items-center justify-between transition-opacity ${settings.randomTurn ? 'opacity-100' : 'opacity-30 pointer-events-none'}`}><label className="text-xs text-stone-400">再対局で固定</label><input type="checkbox" checked={settings.fixTurn} onChange={(e) => updateSettings('fixTurn', e.target.checked)} className="w-4 h-4 accent-amber-600 cursor-pointer" disabled={!settings.randomTurn}/></div>
                  </div>
                  {(myRole === 'sente' || myRole === 'gote') ? (
                    <div className="flex flex-col gap-3">
@@ -751,14 +397,14 @@ const App: React.FC = () => {
 
         {/* --- Bottom Area (自分) --- */}
         <div className="w-full max-w-lg flex items-start justify-between mt-1 gap-2">
-          <div className="flex-1 min-w-0">
-             <Komadai hand={BottomHand} owner={BottomOwner} isCurrentTurn={displayTurn === BottomOwner} onSelectPiece={(p) => handleHandPieceClick(p, BottomOwner)} selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null} />
-          </div>
-          <div>{renderTimer(BottomOwner)}</div>
+          <div className="flex-1 min-w-0"><Komadai hand={BottomHand} owner={BottomOwner} isCurrentTurn={displayTurn === BottomOwner} onSelectPiece={(p) => handleHandPieceClick(p, BottomOwner)} selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null} /></div>
+          {/* ★修正: タイマー表示を flex-shrink-0 で確保 */}
+          <div className="flex-shrink-0">{renderTimer(BottomOwner)}</div>
         </div>
 
         {/* --- Footer (Controls) --- */}
         <div className="w-full max-w-lg flex flex-col gap-2 mt-2">
+          {/* ★修正: 対局中は操作パネルを隠す (元の仕様に戻す) */}
           {gameStatus !== 'playing' ? (
             <div className="flex flex-col gap-2 bg-stone-900/50 p-2 rounded border border-stone-800">
               <div className="flex items-center justify-between">
@@ -774,12 +420,8 @@ const App: React.FC = () => {
               
               {(gameStatus === 'finished' || gameStatus === 'analysis') && (
                 <button 
-                  onClick={toggleLocalMode}
-                  className={`w-full py-2 rounded text-xs font-bold transition-all shadow-md
-                    ${isLocalMode 
-                      ? 'bg-gradient-to-r from-blue-700 to-indigo-700 text-white hover:from-blue-600 hover:to-indigo-600 border border-blue-500' 
-                      : 'bg-stone-700 text-stone-300 hover:bg-stone-600 border border-stone-600'}
-                  `}
+                  onClick={toggleLocalModeWrapper}
+                  className={`w-full py-2 rounded text-xs font-bold transition-all shadow-md ${isLocalMode ? 'bg-gradient-to-r from-blue-700 to-indigo-700 text-white hover:from-blue-600 hover:to-indigo-600 border border-blue-500' : 'bg-stone-700 text-stone-300 hover:bg-stone-600 border border-stone-600'}`}
                 >
                   {isLocalMode ? "同期に戻る " : "ローカル検討"}
                 </button>
@@ -813,11 +455,9 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* --- 右側 (チャットエリア) --- */}
       <div className="w-full max-w-lg lg:max-w-xs h-[400px] lg:h-[600px] shrink-0">
-        <Chat messages={chatMessages} onSendMessage={handleSendMessage} myRole={myRole} userId={userId} />
+        <Chat messages={chatMessages} onSendMessage={sendMessage} myRole={myRole} userId={userId} />
       </div>
-
     </div>
   );
 };

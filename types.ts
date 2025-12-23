@@ -1,5 +1,6 @@
 // src/types.ts
 
+// 既存の型定義（もしあればそのまま維持）
 export type Player = 'sente' | 'gote';
 
 export enum PieceType {
@@ -32,13 +33,9 @@ export interface Piece {
 
 export type BoardState = (Piece | null)[][];
 
-export type Hand = Record<PieceType, number>;
-
-// ★追加: 時間情報の型
-export interface MoveTime {
-  now: number;   // その一手にかかった時間(秒)
-  total: number; // 通算消費時間(秒)
-}
+export type Hand = {
+  [key in PieceType]: number;
+};
 
 export interface Move {
   from: Coordinates | 'hand';
@@ -46,6 +43,19 @@ export interface Move {
   piece: PieceType;
   drop: boolean;
   isPromoted: boolean;
-  isCheck?: boolean; // 王手フラグ
-  time?: MoveTime;   // ★追加: 時間情報
+  time?: { now: number; total: number };
+  isCheck?: boolean;
+}
+
+// ★ここから下を追加してください（今回のエラーの原因）★
+
+export type GameStatus = 'waiting' | 'playing' | 'finished' | 'analysis';
+
+export type Role = 'sente' | 'gote' | 'audience';
+
+export interface TimeSettings {
+  initial: number;
+  byoyomi: number;
+  randomTurn: boolean;
+  fixTurn: boolean;
 }

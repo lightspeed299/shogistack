@@ -28,7 +28,7 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, myRole, userId }) 
   const getRoleLabel = (r: string) => {
       if (r === 'sente') return '先手';
       if (r === 'gote') return '後手';
-      if (r === 'log') return '記録係'; // ログさんの肩書き
+      if (r === 'log') return 'bot'; // ログさんの肩書き
       return '観戦';
   };
   
