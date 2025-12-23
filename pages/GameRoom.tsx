@@ -64,7 +64,7 @@ const GameRoom: React.FC = () => {
   const {
     gameStatus, history, setHistory, myRole, playerNames, winner, readyStatus, rematchRequests,
     settings, times, setTimes, byoyomi, setByoyomi, chatMessages, userCounts, connectionStatus,
-    lastServerTimeData, gameEndReason,
+    lastServerTimeData, gameEndReason,latency,
     updateSettings, toggleReady, resignGame, sendMove, requestUndo, requestReset, requestRematch, sendMessage, setIsLocalMode
   } = useGameSocket(roomId, userId, userName, isAnalysisRoom, isNameDecided);
 
@@ -369,6 +369,11 @@ const GameRoom: React.FC = () => {
           {/* ★修正: ヘッダーにコピーボタンを追加 */}
           <div className="flex items-center gap-2">
             <span>Room: <span className="text-amber-200 font-mono">{roomId}</span></span>
+
+            {/* ★追加: Ping表示 */}
+            <span className={`text-[10px] font-mono flex items-center gap-1 ${latency < 100 ? 'text-green-500' : latency < 300 ? 'text-yellow-500' : 'text-red-500'}`} title="サーバー応答速度">
+               📡 {latency}ms
+            </span>
             <button 
               onClick={copyRoomLink} 
               className="bg-stone-700 hover:bg-stone-600 text-stone-300 px-2 py-0.5 rounded text-[10px] flex items-center gap-1 transition-colors border border-stone-600"
