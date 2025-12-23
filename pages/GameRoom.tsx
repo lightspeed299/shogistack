@@ -201,6 +201,15 @@ const GameRoom: React.FC = () => {
     }
   };
 
+  // ★追加: 招待リンクコピー機能
+  const copyRoomLink = () => {
+    // 現在のURL（クエリパラメータは入室時に消えているので安全）をコピー
+    const url = window.location.href;
+    navigator.clipboard.writeText(url).then(() => {
+        alert("招待URLをコピーしました！\n友達に送って対局しよう！");
+    });
+  };
+
   const handleSquareClick = (coords: Coordinates) => {
     if (gameStatus === 'waiting' && !isAnalysisRoom) return;
     const clickedPiece = displayBoard[coords.y][coords.x];
@@ -274,7 +283,6 @@ const GameRoom: React.FC = () => {
     navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
   };
 
-  // ★ここが抜けていました！タイマー表示用の関数
   const renderTimer = (owner: Player) => {
     const isTurn = displayTurn === owner && gameStatus === 'playing';
     const time = times[owner];
@@ -358,10 +366,19 @@ const GameRoom: React.FC = () => {
     <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-center justify-start lg:justify-center p-2 gap-4 relative">
       <div className="flex flex-col items-center w-full max-w-lg shrink-0">
         <div className="w-full max-w-lg flex justify-between items-center text-stone-400 text-sm px-1 mb-1">
+          {/* ★修正: ヘッダーにコピーボタンを追加 */}
           <div className="flex items-center gap-2">
             <span>Room: <span className="text-amber-200 font-mono">{roomId}</span></span>
+            <button 
+              onClick={copyRoomLink} 
+              className="bg-stone-700 hover:bg-stone-600 text-stone-300 px-2 py-0.5 rounded text-[10px] flex items-center gap-1 transition-colors border border-stone-600"
+              title="この部屋の招待URLをコピー"
+            >
+              <span>🔗</span> 招待
+            </button>
             {isAnalysisRoom && <span className="bg-indigo-900 text-indigo-200 text-[10px] px-1 rounded border border-indigo-700">検討室</span>}
           </div>
+
           <div className="text-xs text-stone-500 font-mono flex gap-2"><span title="部屋人数">👤 {userCounts.room}人 <span className="text-stone-600">(観戦 {Math.max(0, userCounts.room - 2)})</span></span></div>
           <div className={`px-3 py-1 rounded text-xs font-bold border ${gameStatus === 'playing' ? 'bg-green-900 text-green-100 border-green-700' : gameStatus === 'waiting' ? 'bg-blue-900 text-blue-100 border-blue-700' : 'bg-stone-700 text-stone-300 border-stone-600'}`}>{gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}</div>
         </div>
