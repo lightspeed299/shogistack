@@ -162,24 +162,55 @@ export const useGameSocket = (
         });
       });
 
+// ... (前略)
+
+      socket.on("move", (move: Move) => {
+        if (isLocalModeRef.current) return;
+        lastServerTimeData.current = null; 
+        setHistory(prev => {
+          const last = prev[prev.length - 1];
+          if (last && isSameMove(last, move)) {
+            const newHistory = [...prev];
+            newHistory[newHistory.length - 1] = move;
+            return newHistory;
+          }
+          playSound('move');
+          return [...prev, move];
+        });
+      });
+
+      // ★修正: 重複メッセージを除外するロジックを追加
       socket.on("receive_message", (msg: any) => {
-        setChatMessages(prev => [...prev, msg]);
+        setChatMessages(prev => {
+          // すでに同じIDのメッセージがあるか確認
+          const isDuplicate = prev.some(m => m.id === msg.id);
+          if (isDuplicate) return prev;
+          
+          // または、システムメッセージで内容と時間がほぼ同じ場合も重複とみなす（Strict Mode対策）
+          if (msg.role === 'system' && prev.length > 0) {
+              const lastMsg = prev[prev.length - 1];
+              if (lastMsg.role === 'system' && 
+                  lastMsg.text === msg.text && 
+                  Math.abs(lastMsg.timestamp - msg.timestamp) < 500) {
+                  return prev;
+              }
+          }
+
+          return [...prev, msg];
+        });
       });
     }
+    
 
-    const addSystemMessage = (text: string) => {
-        setChatMessages(prev => [...prev, {
-            id: Math.random().toString(),
-            text: `[DEBUG] ${text}`,
-            role: 'system',
-            timestamp: Date.now()
-        }]);
-    };
+    // ...
+    // ★ addSystemMessage は削除してOK
 
-    socket.on("connect_error", (err) => addSystemMessage(`接続エラー: ${err.message}`));
-    socket.on("disconnect", (reason) => addSystemMessage(`切断されました: ${reason}`));
-    socket.on("reconnect_attempt", () => addSystemMessage("再接続を試みています..."));
-    socket.on("reconnect", () => addSystemMessage("再接続しました"));
+    // 代わりに console.log で静かに監視する
+    socket.on("connect_error", (err) => console.error("Socket接続エラー:", err.message));
+    socket.on("disconnect", (reason) => console.warn("Socket切断:", reason));
+    socket.on("reconnect_attempt", () => console.log("再接続試行中..."));
+    socket.on("reconnect", () => console.log("再接続成功"));
+    // ...
 
     return () => {
       socket.off("connect", handleConnect);
