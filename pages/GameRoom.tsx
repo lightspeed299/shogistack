@@ -354,11 +354,18 @@ const GameRoom: React.FC = () => {
   return (
     <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-center justify-start lg:justify-center p-2 gap-4 relative">
       
-      {/* ★修正: 接続中オーバーレイ (fixed + justify-start + pt-40 で画面上部に固定) */}
+      {/* 接続中オーバーレイ (fixed + pt-40) */}
       {!isConnected && (
         <div className="fixed inset-0 z-[100] bg-black/80 flex flex-col items-center justify-start pt-40 text-white backdrop-blur-sm animate-in fade-in duration-300">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-amber-500 mb-4"></div>
           <p className="text-xl font-bold tracking-wider">Starting Server...</p>
+          {/* ★追加: 強制リロードボタン (Transport errorで固まったとき用) */}
+          <button 
+             onClick={() => window.location.reload()}
+             className="mt-6 text-sm text-stone-400 underline hover:text-white"
+          >
+             もし長時間動かない場合は再読み込み
+          </button>
         </div>
       )}
 
@@ -420,6 +427,7 @@ const GameRoom: React.FC = () => {
           <div className="flex-shrink-0">{renderTimer(BottomOwner)}</div>
         </div>
 
+        {/* --- Footer (Controls) --- */}
         <div className="w-full max-w-lg flex flex-col gap-2 mt-2">
           {gameStatus !== 'playing' ? (
             <div className="flex flex-col gap-2 bg-stone-900/50 p-2 rounded border border-stone-800">
@@ -463,7 +471,8 @@ const GameRoom: React.FC = () => {
                    <button onClick={requestReset} className="bg-red-900/30 text-red-300 px-3 py-1 rounded text-xs hover:bg-red-900/50">初期局面へ</button>
                    {(myRole === 'sente' || myRole === 'gote') && (
                      <div className="flex flex-col items-center relative">
-                       <button onClick={requestRematch} className={`px-3 py-1 rounded text-xs shadow font-bold transition-colors ${rematchRequests[myRole] ? 'bg-amber-800 text-stone-400' : 'bg-amber-700 text-white hover:bg-amber-600'}`} disabled={rematchRequests[myRole]}>{rematchRequests[myRole] ? "相手待ち..." : "再対局"}</button>
+                       {/* ★修正: テキストを「待機中」に短縮 & whitespace-nowrap で折り返し防止 */}
+                       <button onClick={requestRematch} className={`px-3 py-1 rounded text-xs shadow font-bold transition-colors whitespace-nowrap ${rematchRequests[myRole] ? 'bg-amber-800 text-stone-400' : 'bg-amber-700 text-white hover:bg-amber-600'}`} disabled={rematchRequests[myRole]}>{rematchRequests[myRole] ? "待機中..." : "再対局"}</button>
                        {rematchRequests[myRole === 'sente' ? 'gote' : 'sente'] && (<span className="text-[10px] text-green-400 absolute -top-4 w-full text-center animate-bounce font-bold">相手OK!</span>)}
                      </div>
                    )}
