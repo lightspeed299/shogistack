@@ -2,6 +2,7 @@ import { BoardState, Coordinates, Hand, Move, PieceType, Player, Piece } from '.
 import { PIECE_KANJI } from '../constants';
 import { SENTE_PROMOTION_ZONE, GOTE_PROMOTION_ZONE } from '../constants';
 
+// --- 初期盤面生成 ---
 export const createInitialBoard = (): BoardState => {
   const board: BoardState = Array(9).fill(null).map(() => Array(9).fill(null));
   
@@ -25,6 +26,8 @@ export const createInitialBoard = (): BoardState => {
 
   return board;
 };
+
+// --- ヘルパー関数群 ---
 
 const getReversePieceType = (type: PieceType): PieceType => {
   switch (type) {
@@ -106,6 +109,7 @@ const canPieceMoveTo = (board: BoardState, from: Coordinates, to: Coordinates, p
   }
 };
 
+// --- 手の適用 ---
 export const applyMove = (currentBoard: BoardState, currentHands: { sente: Hand; gote: Hand }, move: Move, currentTurn: Player) => {
   const newBoard = currentBoard.map(row => row.map(p => p ? { ...p } : null));
   const newHands = { 
@@ -136,7 +140,8 @@ export const applyMove = (currentBoard: BoardState, currentHands: { sente: Hand;
   return { board: newBoard, hands: newHands, turn: nextTurn };
 };
 
-const isKingInCheck = (board: BoardState, targetTurn: Player) => {
+// --- 王手判定 ---
+export const isKingInCheck = (board: BoardState, targetTurn: Player) => {
   const attackerTurn = targetTurn === 'sente' ? 'gote' : 'sente';
   let kingPos: Coordinates | null = null;
 
@@ -165,7 +170,60 @@ const isKingInCheck = (board: BoardState, targetTurn: Player) => {
   return false;
 };
 
-export const isValidMove = (board: BoardState, currentTurn: Player, move: Move): boolean => {
+// --- 合法手があるか（詰んでいないか）チェック ---
+export const hasLegalMoves = (board: BoardState, hands: {sente: Hand, gote: Hand}, turn: Player): boolean => {
+  // 1. 盤上の駒の移動
+  for (let y = 0; y < 9; y++) {
+    for (let x = 0; x < 9; x++) {
+      const p = board[y][x];
+      if (p && p.owner === turn) {
+        // 全マスへの移動を試行
+        for (let ty = 0; ty < 9; ty++) {
+          for (let tx = 0; tx < 9; tx++) {
+            if (board[ty][tx]?.owner === turn) continue; // 自分の駒の上には行けない
+
+            // まず幾何学的に動けるかチェック（軽い処理）
+            if (!canPieceMoveTo(board, {x, y}, {x: tx, y: ty}, p, turn)) continue;
+
+            const move: Move = { from: {x, y}, to: {x: tx, y: ty}, piece: p.type, drop: false, isPromoted: false };
+            
+            // ★重要: ここでは checkUchiFuzume=false で再帰を防ぐ
+            if (isValidMove(board, hands, turn, move, false)) return true;
+
+            // 成る移動のチェック
+            const canPromote = [PieceType.Pawn, PieceType.Lance, PieceType.Knight, PieceType.Silver, PieceType.Bishop, PieceType.Rook].includes(p.type);
+            if (canPromote) {
+               const isZone = (turn === 'sente' ? (y <= 2 || ty <= 2) : (y >= 6 || ty >= 6));
+               if (isZone) {
+                  if (isValidMove(board, hands, turn, { ...move, isPromoted: true }, false)) return true;
+               }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. 持ち駒を打つ
+  const hand = hands[turn];
+  for (const pieceType of Object.keys(hand)) {
+    if (hand[pieceType as PieceType] > 0) {
+      for (let ty = 0; ty < 9; ty++) {
+        for (let tx = 0; tx < 9; tx++) {
+          if (board[ty][tx] !== null) continue;
+          const move: Move = { from: 'hand', to: {x: tx, y: ty}, piece: pieceType as PieceType, drop: true, isPromoted: false };
+          if (isValidMove(board, hands, turn, move, false)) return true;
+        }
+      }
+    }
+  }
+
+  return false; // 何も合法手がなければ「詰み」
+};
+
+// --- 合法手判定（メイン） ---
+// 引数に hands を追加し、checkUchiFuzume フラグを追加
+export const isValidMove = (board: BoardState, hands: {sente: Hand, gote: Hand}, currentTurn: Player, move: Move, checkUchiFuzume: boolean = true): boolean => {
   const { from, to, piece, drop, isPromoted } = move;
 
   if (to.x < 0 || to.x > 8 || to.y < 0 || to.y > 8) return false;
@@ -175,12 +233,17 @@ export const isValidMove = (board: BoardState, currentTurn: Player, move: Move):
   let isMoveOk = false;
   if (drop) {
     if (targetPiece !== null) return false;
+    // 持ち駒があるかチェック
+    if ((hands as any)[currentTurn][piece] <= 0) return false; 
+
     if (piece === PieceType.Pawn) {
+      // 二歩チェック
       for (let y = 0; y < 9; y++) {
         const p = board[y][to.x];
         if (p && p.owner === currentTurn && p.type === PieceType.Pawn && !p.isPromoted) return false;
       }
     }
+    // 行き所のない駒チェック
     if (currentTurn === 'sente') {
       if ((piece === PieceType.Pawn || piece === PieceType.Lance) && to.y === 0) return false;
       if (piece === PieceType.Knight && to.y <= 1) return false;
@@ -198,18 +261,37 @@ export const isValidMove = (board: BoardState, currentTurn: Player, move: Move):
 
   if (!isMoveOk) return false;
 
-  const dummyHands = { 
-      sente: { [PieceType.Pawn]: 100 } as any, 
-      gote: { [PieceType.Pawn]: 100 } as any 
-  };
-  const next = applyMove(board, dummyHands, move, currentTurn);
-  
+  // 自殺手（王手放置）チェック
+  const next = applyMove(board, hands, move, currentTurn);
   if (isKingInCheck(next.board, currentTurn)) {
       return false; 
   }
 
+  // ★打ち歩詰め判定
+  // 歩打ちで、かつチェックを行う設定になっている場合
+  if (checkUchiFuzume && drop && piece === PieceType.Pawn) {
+    const nextTurn = currentTurn === 'sente' ? 'gote' : 'sente';
+    // 1. 歩を打って王手になっているか
+    if (isKingInCheck(next.board, nextTurn)) {
+      // 2. 相手に逃げ場所（合法手）がないか
+      // hasLegalMoves内でisValidMoveを呼ぶときは無限ループ防止のため checkUchiFuzume=false にする
+      if (!hasLegalMoves(next.board, next.hands, nextTurn)) {
+        return false; // 打ち歩詰めなので反則
+      }
+    }
+  }
+
   return true;
 };
+
+// --- 詰み判定 ---
+export const isCheckmate = (board: BoardState, hands: {sente: Hand, gote: Hand}, turn: Player): boolean => {
+  // 王手がかかっていて、かつ逃げ場所がない
+  return isKingInCheck(board, turn) && !hasLegalMoves(board, hands, turn);
+};
+
+
+// --- KIF出力用フォーマット関数 ---
 
 const formatKifTime = (seconds: number) => {
   const m = Math.floor(seconds / 60);
@@ -308,7 +390,6 @@ export const exportKIF = (
     let endStr = "";
     let timeStr = "( 0:00/00:00:00)"; 
 
-    // ★修正: 投了(resign) と 切れ負け(timeout) 両方で計算を行う
     if (endReason === 'resign' || endReason === 'timeout') {
         endStr = endReason === 'resign' ? "投了" : "切れ負け";
         
@@ -329,18 +410,14 @@ export const exportKIF = (
             let loserTotalConsumed = 0;
 
             if (remainingTimes[loser] > 0) {
-               // 通常消費
                loserTotalConsumed = Math.max(0, timeSettings.initial - remainingTimes[loser]);
                resignThinkTime = Math.max(0, loserTotalConsumed - loserPrevTotal);
             } else {
-               // 持ち時間切れ後の処理
                if (timeSettings.byoyomi > 0) {
-                  // 秒読みモード: 秒読み分を加算
                   const currentByoyomiUsed = Math.max(0, timeSettings.byoyomi - remainingByoyomi[loser]);
                   loserTotalConsumed = loserPrevTotal + currentByoyomiUsed;
                   resignThinkTime = currentByoyomiUsed;
                } else {
-                  // 秒読みなし（切れ負けルール）: 持ち時間を全て使い切ったとみなす
                   loserTotalConsumed = timeSettings.initial;
                   resignThinkTime = Math.max(0, loserTotalConsumed - loserPrevTotal);
                }
@@ -351,6 +428,7 @@ export const exportKIF = (
     } else if (endReason === 'sennichite') endStr = "千日手";
     else if (endReason === 'illegal_sennichite') endStr = "反則負け";
     else if (endReason === 'try') endStr = "入玉宣言勝ち"; 
+    else if (endReason === 'checkmate') endStr = "詰み"; 
 
     if (endStr) {
        body += `${lastNum} ${endStr.padEnd(16, ' ')} ${timeStr}\n`;
@@ -367,3 +445,6 @@ export const exportKIF = (
 
   return `${header}\n${body}${resultStr}\n`;
 };
+
+// SFEN生成関数も必要ならここに含めますが、元のファイルにはありませんでした。
+// 必要であれば shogistack-server 側の generateSFEN をここにコピーしてください。
